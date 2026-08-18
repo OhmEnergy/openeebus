@@ -28,6 +28,7 @@
 #include "src/ship/api/ship_node_interface.h"
 #include "src/ship/api/ship_node_reader_interface.h"
 #include "src/ship/api/tls_certificate_interface.h"
+#include "src/ship/api/trust_mode.h"
 #include "src/ship/api/websocket_creator_interface.h"
 #include "src/ship/ship_connection/types.h"
 
@@ -73,6 +74,10 @@ struct ShipNode {
   HttpServerObject* http_server;
   bool connection_attempt_running;
   ShipRole role;
+  /** When a foreign SKI is trusted, see EebusTrustMode */
+  EebusTrustMode trust_mode;
+  /** Whether remote_ski is trusted, as opposed to provisionally accepted */
+  bool remote_ski_trusted;
 };
 
 #define SHIP_NODE(obj) ((ShipNode*)(obj))

@@ -59,6 +59,7 @@ static void ApprovePendingHandshake(ShipConnectionObject* self);
 static void AbortPendingHandshake(ShipConnectionObject* self);
 
 static SmeState GetState(ShipConnectionObject* self, EebusError* err);
+static uint32_t GetPendingWaitingMs(ShipConnectionObject* self);
 static void ShipConnectionTimeoutCallback(void* timer_data);
 
 static const ShipConnectionInterface ship_connection_methods = {
@@ -76,6 +77,7 @@ static const ShipConnectionInterface ship_connection_methods = {
     .approve_pending_handshake = ApprovePendingHandshake,
     .abort_pending_handshake = AbortPendingHandshake,
     .get_state = GetState,
+    .get_pending_waiting_ms = GetPendingWaitingMs,
 };
 
 void ShipConnectionConstruct(
@@ -106,6 +108,8 @@ void ShipConnectionConstruct(
   self->prolongation_request_reply_timer = EebusTimerCreate(ShipConnectionTimeoutCallback, self);
 
   self->last_received_waiting_value = 0;
+  self->trust_decision              = kShipConnectionTrustDecisionNone;
+  self->remote_hello_ready          = false;
   self->shutdown_once               = false;
 
   self->cancel    = false;
@@ -263,38 +267,36 @@ SmeState GetState(ShipConnectionObject* self, EebusError* error) {
   return sc->sme_state;
 }
 
-void ApprovePendingHandshake(ShipConnectionObject* self) {
-  ShipConnection* const sc = SHIP_CONNECTION(self);
-
-  if (sc->sme_state != kSmeHelloStatePendingListen) {
-    // TODO: what to do if the state is different?
+// The state machine is only ever advanced by the connection thread, which
+// sits in ShipConnectionReceive(). A decision is therefore posted to it
+// rather than applied on the caller's thread.
+static void ShipConnectionPostTrustDecision(ShipConnection* self, ShipConnectionQueueMsgType type) {
+  if (self->msg_queue == NULL) {
     return;
   }
 
-  // TODO: move this into hs_hello.go and add tests
+  ShipConnectionQueueMessage queue_msg = {.type = type};
+  MessageBufferInit(&queue_msg.msg_buf, NULL, 0);
 
-  // HELLO_OK
-  ShipConnectionSetSmeState(sc, kSmeHelloStateReadyInit);
-  HandleState(sc);
+  EEBUS_QUEUE_SEND(self->msg_queue, &queue_msg, kTimeoutInfinite);
+}
 
-  // TODO: check if we need to do some validations before moving on to the next
-  // state
-  ShipConnectionSetSmeState(sc, kSmeHelloStateOk);
-  HandleState(sc);
+void ApprovePendingHandshake(ShipConnectionObject* self) {
+  ShipConnectionPostTrustDecision(SHIP_CONNECTION(self), kShipConnectionQueueMsgTypeTrustGranted);
 }
 
 void AbortPendingHandshake(ShipConnectionObject* self) {
-  ShipConnection* const sc = SHIP_CONNECTION(self);
+  ShipConnectionPostTrustDecision(SHIP_CONNECTION(self), kShipConnectionQueueMsgTypeTrustDenied);
+}
 
-  const SmeState state = sc->sme_state;
-  if (state != kSmeHelloStatePendingListen && state != kSmeHelloStateReadyListen) {
-    // TODO: what to do if the state is differnet?
-    return;
+uint32_t GetPendingWaitingMs(ShipConnectionObject* self) {
+  const ShipConnection* const sc = SHIP_CONNECTION(self);
+
+  if (sc->sme_state != kSmeHelloStatePendingListen) {
+    return 0;
   }
 
-  // TODO: Move this into hs_hello.go and add tests
-
-  ShipConnectionSetSmeState(sc, kSmeHelloStateAbort);
+  return sc->last_received_waiting_value;
 }
 
 void CloseConnection(ShipConnectionObject* self, bool safe, int32_t code, const char* reason) {
@@ -454,13 +456,46 @@ EebusError ShipConnectionReceive(ShipConnection* self, MessageBuffer* buf, uint3
   EEBUS_TIMER_START(self->wait_for_ready_timer, timeout, false);
 
   ShipConnectionQueueMessage queue_msg;
-  const EebusError queue_recv_ret = EEBUS_QUEUE_RECEIVE(self->msg_queue, &queue_msg, kTimeoutInfinite);
+  EebusError queue_recv_ret = kEebusErrorOk;
+
+  // A trust decision is only meaningful in the "hello" PENDING phase. In any
+  // other state it raced the handshake, so drop it and keep waiting. The timer
+  // bounds the whole wait, not a single queue read, so it keeps running.
+  for (;;) {
+    queue_recv_ret = EEBUS_QUEUE_RECEIVE(self->msg_queue, &queue_msg, kTimeoutInfinite);
+
+    if (queue_recv_ret != kEebusErrorOk) {
+      break;
+    }
+
+    const bool is_trust_decision = (queue_msg.type == kShipConnectionQueueMsgTypeTrustGranted)
+                                || (queue_msg.type == kShipConnectionQueueMsgTypeTrustDenied);
+
+    if (!is_trust_decision) {
+      break;
+    }
+
+    if (self->sme_state != kSmeHelloStatePendingListen) {
+      SHIP_CONNECTION_DEBUG_PRINTF("%s(), trust decision ignored in state %d\n", __func__, (int)self->sme_state);
+      continue;
+    }
+
+    self->trust_decision = (queue_msg.type == kShipConnectionQueueMsgTypeTrustGranted)
+                             ? kShipConnectionTrustDecisionGranted
+                             : kShipConnectionTrustDecisionDenied;
+    break;
+  }
 
   EEBUS_TIMER_STOP(self->wait_for_ready_timer);
 
   if (queue_recv_ret != kEebusErrorOk) {
     SHIP_CONNECTION_DEBUG_PRINTF("%s(), error receiving the message from queue\n", __func__);
     return queue_recv_ret;
+  }
+
+  if (self->trust_decision != kShipConnectionTrustDecisionNone) {
+    // No SHIP message was received, the caller reads trust_decision instead.
+    return kEebusErrorNoChange;
   }
 
   if (queue_msg.type == kShipConnectionQueueMsgTypeDataReceived) {
@@ -545,10 +580,18 @@ void SmeHelloStateReadyInit(ShipConnection* self) {
   // there.
   EEBUS_TIMER_STOP(self->send_prolongation_request_timer);
   EEBUS_TIMER_STOP(self->prolongation_request_reply_timer);
-  if (SmeHelloStateSendHelloMsg(self, kConnectionHelloPhaseReady, tHelloInit, false) == kEebusErrorOk) {
-    ShipConnectionSetSmeState(self, kSmeHelloStateReadyListen);
-  } else {
+  if (SmeHelloStateSendHelloMsg(self, kConnectionHelloPhaseReady, tHelloInit, false) != kEebusErrorOk) {
     ShipConnectionSetSmeState(self, kSmeHelloStateAbort);
+    return;
+  }
+
+  // SHIP 13.4.4.1.2: HELLO_OK requires both SME Users ready. The peer announces
+  // its "ready" once, so listening for one already received would consume the
+  // protocol handshake instead and abort the connection.
+  if (self->remote_hello_ready) {
+    ShipConnectionSetSmeState(self, kSmeHelloStateOk);
+  } else {
+    ShipConnectionSetSmeState(self, kSmeHelloStateReadyListen);
   }
 }
 
@@ -656,6 +699,8 @@ void SmeHelloStatePendingInit(ShipConnection* self) {
 }
 
 void SmeHelloCalculateNewWaitValueAndSetTimer(ShipConnection* self, const ConnectionHello* msg) {
+  self->last_received_waiting_value = *msg->waiting;
+
   if (*msg->waiting >= tHelloProlongThrInc) {
     uint32_t new_wait_duration = *msg->waiting - tHelloProlongWaitingGap;
 
@@ -703,6 +748,8 @@ void SmeHelloPendingStateEvaluateReceivedHelloMessage(ShipConnection* self) {
   if (sme_hello != NULL) {
     switch (sme_hello->phase) {
       case kConnectionHelloPhaseReady: {
+        // The peer announces "ready" once and does not repeat it.
+        self->remote_hello_ready = true;
         SmeHelloStateCheckWaitingSubelement(self, sme_hello);
         break;
       }
@@ -737,6 +784,23 @@ void SmeHelloStatePendingListen(ShipConnection* self) {
   switch (error) {
     case kEebusErrorOk: {
       SmeHelloPendingStateEvaluateReceivedHelloMessage(self);
+      break;
+    }
+
+    case kEebusErrorNoChange: {
+      // The application decided about this peer: SHIP 13.4.4.1.2 a) switch to
+      // READY and inform the partner, or c) report the abortion.
+      const ShipConnectionTrustDecision decision = self->trust_decision;
+
+      self->trust_decision = kShipConnectionTrustDecisionNone;
+
+      if (decision == kShipConnectionTrustDecisionGranted) {
+        EEBUS_TIMER_STOP(self->send_prolongation_request_timer);
+        EEBUS_TIMER_STOP(self->prolongation_request_reply_timer);
+        ShipConnectionSetSmeState(self, kSmeHelloStateReadyInit);
+      } else {
+        ShipConnectionSetSmeState(self, kSmeHelloStateAbort);
+      }
       break;
     }
 

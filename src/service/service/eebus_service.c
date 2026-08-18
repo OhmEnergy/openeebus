@@ -65,6 +65,8 @@ static const ServiceDetails* GetRemoteServiceDetailsWithSki(const EebusServiceOb
 static void RegisterRemoteSki(EebusServiceObject* self, const char* ski, bool enable);
 static void UnregisterRemoteSki(EebusServiceObject* self, const char* ski);
 static void CancelPairingWithSki(EebusServiceObject* self, const char* ski);
+static void ApprovePendingHandshakeWithSki(EebusServiceObject* self, const char* ski);
+static uint32_t GetPendingWaitingMsWithSki(EebusServiceObject* self, const char* ski);
 static void SetPairingPossible(EebusServiceObject* self, bool is_pairing_possible);
 static const char* GetLocalSki(EebusServiceObject* self);
 
@@ -89,6 +91,8 @@ static const EebusServiceInterface service_methods = {
     .register_remote_ski                 = RegisterRemoteSki,
     .unregister_remote_ski               = UnregisterRemoteSki,
     .cancel_pairing_with_ski             = CancelPairingWithSki,
+    .approve_pending_handshake_with_ski  = ApprovePendingHandshakeWithSki,
+    .get_pending_waiting_ms_with_ski     = GetPendingWaitingMsWithSki,
     .set_pairing_possible                = SetPairingPossible,
     .get_local_ski                       = GetLocalSki,
 };
@@ -146,8 +150,9 @@ EebusError ServiceConstruct(
     return kEebusErrorInit;
   }
 
-  const char* const service_name = EebusServiceConfigGetMdnsServiceName(cfg);
-  const int32_t port             = EebusServiceConfigGetPort(cfg);
+  const char* const service_name  = EebusServiceConfigGetMdnsServiceName(cfg);
+  const int32_t port              = EebusServiceConfigGetPort(cfg);
+  const EebusTrustMode trust_mode = EebusServiceConfigGetTrustMode(cfg);
 
   self->tls_certificate = tls_certificate;
 
@@ -160,7 +165,8 @@ EebusError ServiceConstruct(
       port,
       tls_certificate,
       SHIP_NODE_READER_OBJECT(self),
-      self->local_service_details
+      self->local_service_details,
+      trust_mode
   );
 
   if (self->ship_node == NULL) {
@@ -296,6 +302,14 @@ void UnregisterRemoteSki(EebusServiceObject* self, const char* ski) {
 
 void CancelPairingWithSki(EebusServiceObject* self, const char* ski) {
   SHIP_NODE_CANCEL_PAIRING_WITH_SKI(EEBUS_SERVICE(self)->ship_node, ski);
+}
+
+void ApprovePendingHandshakeWithSki(EebusServiceObject* self, const char* ski) {
+  SHIP_NODE_APPROVE_PENDING_HANDSHAKE_WITH_SKI(EEBUS_SERVICE(self)->ship_node, ski);
+}
+
+uint32_t GetPendingWaitingMsWithSki(EebusServiceObject* self, const char* ski) {
+  return SHIP_NODE_GET_PENDING_WAITING_MS_WITH_SKI(EEBUS_SERVICE(self)->ship_node, ski);
 }
 
 void SetPairingPossible(EebusServiceObject* self, bool is_pairing_possible) {

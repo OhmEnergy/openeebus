@@ -79,6 +79,8 @@ static void Stop(ShipNodeObject* self);
 static void RegisterRemoteSki(ShipNodeObject* self, const char* ski, bool is_trusted);
 static void UnregisterRemoteSki(ShipNodeObject* self, const char* ski);
 static void CancelPairingWithSki(ShipNodeObject* self, const char* ski);
+static void ApprovePendingHandshakeWithSki(ShipNodeObject* self, const char* ski);
+static uint32_t GetPendingWaitingMsWithSki(ShipNodeObject* self, const char* ski);
 static void ShipNodeUnregisterSki(ShipNodeObject* self, const char* ski);
 static void ShipNodeRegisterSki(ShipNodeObject* self, const char* ski, bool is_trusted);
 
@@ -93,11 +95,13 @@ static const ShipNodeInterface ship_node_methods = {
         .setup_remote_device              = SetupRemoteDevice,
     },
 
-    .start                   = Start,
-    .stop                    = Stop,
-    .register_remote_ski     = RegisterRemoteSki,
-    .unregister_remote_ski   = UnregisterRemoteSki,
-    .cancel_pairing_with_ski = CancelPairingWithSki,
+    .start                              = Start,
+    .stop                               = Stop,
+    .register_remote_ski                = RegisterRemoteSki,
+    .unregister_remote_ski              = UnregisterRemoteSki,
+    .cancel_pairing_with_ski            = CancelPairingWithSki,
+    .approve_pending_handshake_with_ski = ApprovePendingHandshakeWithSki,
+    .get_pending_waiting_ms_with_ski    = GetPendingWaitingMsWithSki,
 };
 
 static void ShipNodeConstruct(
@@ -109,7 +113,8 @@ static void ShipNodeConstruct(
     int port,
     const TlsCertificateObject* tsl_certificate,
     ShipNodeReaderObject* ship_node_reader,
-    ServiceDetails* local_service_details
+    ServiceDetails* local_service_details,
+    EebusTrustMode trust_mode
 );
 
 static void ShipNodeOnMdnsEntriesFoundCallback(Vector* found_entries, void* ctx);
@@ -143,7 +148,8 @@ void ShipNodeConstruct(
     int port,
     const TlsCertificateObject* tsl_certificate,
     ShipNodeReaderObject* ship_node_reader,
-    ServiceDetails* local_service_details
+    ServiceDetails* local_service_details,
+    EebusTrustMode trust_mode
 ) {
   // Override "virtual function table"
   SHIP_NODE_INTERFACE(self) = &ship_node_methods;
@@ -160,7 +166,9 @@ void ShipNodeConstruct(
   self->cancel                = false;
   self->connection_thread     = NULL;
 
-  self->remote_ski = NULL;
+  self->remote_ski         = NULL;
+  self->remote_ski_trusted = false;
+  self->trust_mode         = trust_mode;
 
   self->connections_table     = NULL;
   self->ship_node_reader      = ship_node_reader;
@@ -191,7 +199,8 @@ ShipNodeObject* ShipNodeCreate(
     int port,
     const TlsCertificateObject* tls_certificate,
     ShipNodeReaderObject* ship_node_reader,
-    ServiceDetails* local_service_details
+    ServiceDetails* local_service_details,
+    EebusTrustMode trust_mode
 ) {
   ShipNode* const sn = (ShipNode*)EEBUS_MALLOC(sizeof(ShipNode));
 
@@ -204,7 +213,8 @@ ShipNodeObject* ShipNodeCreate(
       port,
       tls_certificate,
       ship_node_reader,
-      local_service_details
+      local_service_details,
+      trust_mode
   );
 
   return SHIP_NODE_OBJECT(sn);
@@ -285,10 +295,13 @@ void ShipNodeOnMdnsEntriesFoundCallback(Vector* found_entries, void* ctx) {
 }
 
 bool IsRemoteServiceForSkiPaired(InfoProviderObject* self, const char* ski) {
-  UNUSED(self);
-  UNUSED(ski);
-  // TODO: Implement method
-  return false;
+  ShipNode* const sn = SHIP_NODE(self);
+
+  EEBUS_MUTEX_LOCK(sn->mutex);
+  const bool is_paired = SkiMatches(ski, sn->remote_ski) && sn->remote_ski_trusted;
+  EEBUS_MUTEX_UNLOCK(sn->mutex);
+
+  return is_paired;
 }
 
 void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_error) {
@@ -302,6 +315,17 @@ void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_erro
   SHIP_CONNECTION_STOP(sc);
   SHIP_NODE_DEBUG_PRINTF("%s(), connection closed\n", __func__);
   SHIP_NODE_READER_ON_REMOTE_SKI_DISCONNECTED(self->ship_node_reader, SHIP_CONNECTION_GET_REMOTE_SKI(sc));
+
+  // SHIP 5.2 / SRIP A.3: an SKI accepted only provisionally must be discarded
+  // when the connection ends without it having been trusted, so that a refused
+  // peer is prompted for again rather than admitted on its next attempt.
+  EEBUS_MUTEX_LOCK(self->mutex);
+  if (!self->remote_ski_trusted && !StringIsEmpty(self->remote_ski)) {
+    SHIP_NODE_DEBUG_PRINTF("%s(), discarding untrusted SKI %s\n", __func__, self->remote_ski);
+    StringDelete(self->remote_ski);
+    self->remote_ski = NULL;
+  }
+  EEBUS_MUTEX_UNLOCK(self->mutex);
   ShipConnectionDelete(sc);
   self->ship_connection = NULL;
 
@@ -478,20 +502,30 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
 
   // Check the SKI
   EEBUS_MUTEX_LOCK(sn->mutex);
-  bool is_ski_trusted = SkiMatches(ski, sn->remote_ski);
-  if (!is_ski_trusted && StringIsEmpty(sn->remote_ski)) {
-    // Pairing mode: no remote SKI registered yet.
-    // Delegate to the info-provider (service layer) to decide whether to trust this SKI.
-    if (INFO_PROVIDER_IS_WAITING_FOR_TRUST_ALLOWED(sn, ski)) {
+  bool is_ski_accepted = SkiMatches(ski, sn->remote_ski);
+  if (!is_ski_accepted && StringIsEmpty(sn->remote_ski)) {
+    // No remote SKI registered yet, so this is a registration rather than a
+    // reconnection. When the SKI may be trusted is the trust mode's decision.
+    if (sn->trust_mode == kEebusTrustModePostTrust) {
+      // SHIP 5.2 post-trust: accept the SKI provisionally, but do not trust it.
+      // That holds the "hello" phase in PENDING until the application decides.
       StringDelete(sn->remote_ski);
-      sn->remote_ski = StringCopy(ski);
-      is_ski_trusted = (sn->remote_ski != NULL);
+      sn->remote_ski         = StringCopy(ski);
+      sn->remote_ski_trusted = false;
+      is_ski_accepted        = (sn->remote_ski != NULL);
+      SHIP_NODE_DEBUG_PRINTF("%s(), Post-trust: accepted SKI %s pending a decision\n", __func__, ski);
+    } else if (INFO_PROVIDER_IS_WAITING_FOR_TRUST_ALLOWED(sn, ski)) {
+      // Pairing mode ("auto accept", SHIP 12.3.1.1): trust it outright.
+      StringDelete(sn->remote_ski);
+      sn->remote_ski         = StringCopy(ski);
+      sn->remote_ski_trusted = (sn->remote_ski != NULL);
+      is_ski_accepted        = sn->remote_ski_trusted;
       SHIP_NODE_DEBUG_PRINTF("%s(), Pairing mode: auto-trusting incoming SKI %s\n", __func__, ski);
     }
   }
   EEBUS_MUTEX_UNLOCK(sn->mutex);
 
-  if (!is_ski_trusted) {
+  if (!is_ski_accepted) {
     SHIP_NODE_DEBUG_PRINTF("%s(), Remote SKI is not trusted\n", __func__);
     return -1;
   }
@@ -552,12 +586,12 @@ void Stop(ShipNodeObject* self) {
 }
 
 void ShipNodeRegisterSki(ShipNodeObject* self, const char* ski, bool is_trusted) {
-  UNUSED(is_trusted);
   ShipNode* const sn = SHIP_NODE(self);
 
   EEBUS_MUTEX_LOCK(sn->mutex);
   StringDelete(sn->remote_ski);
-  sn->remote_ski = StringCopy(ski);
+  sn->remote_ski         = StringCopy(ski);
+  sn->remote_ski_trusted = is_trusted && (sn->remote_ski != NULL);
   EEBUS_MUTEX_UNLOCK(sn->mutex);
 }
 
@@ -581,7 +615,8 @@ void ShipNodeUnregisterSki(ShipNodeObject* self, const char* ski) {
 
   EEBUS_MUTEX_LOCK(sn->mutex);
   StringDelete(sn->remote_ski);
-  sn->remote_ski = NULL;
+  sn->remote_ski         = NULL;
+  sn->remote_ski_trusted = false;
   EEBUS_MUTEX_UNLOCK(sn->mutex);
 
   // TODO: Fix possible situation that ShipConnection Start() is called
@@ -609,8 +644,46 @@ void UnregisterRemoteSki(ShipNodeObject* self, const char* ski) {
   EEBUS_QUEUE_SEND(sn->msg_queue, &queue_msg, kTimeoutInfinite);
 }
 
+void ApprovePendingHandshakeWithSki(ShipNodeObject* self, const char* ski) {
+  ShipNode* const sn = SHIP_NODE(self);
+
+  if (!SkiMatches(ski, sn->remote_ski)) {
+    SHIP_NODE_DEBUG_PRINTF("%s(), SKI does not match\n", __func__);
+    return;
+  }
+
+  // Trust first, then release the handshake: the connection thread reads the
+  // trust state to pick the "hello" phase.
+  EEBUS_MUTEX_LOCK(sn->mutex);
+  sn->remote_ski_trusted = true;
+  EEBUS_MUTEX_UNLOCK(sn->mutex);
+
+  if (sn->ship_connection != NULL) {
+    SHIP_CONNECTION_APPROVE_PENDING_HANDSHAKE(sn->ship_connection);
+  }
+}
+
+uint32_t GetPendingWaitingMsWithSki(ShipNodeObject* self, const char* ski) {
+  ShipNode* const sn = SHIP_NODE(self);
+
+  if (!SkiMatches(ski, sn->remote_ski) || (sn->ship_connection == NULL)) {
+    return 0;
+  }
+
+  return SHIP_CONNECTION_GET_PENDING_WAITING_MS(sn->ship_connection);
+}
+
 void CancelPairingWithSki(ShipNodeObject* self, const char* ski) {
-  UNUSED(self);
-  UNUSED(ski);
-  // TODO: Implement method
+  ShipNode* const sn = SHIP_NODE(self);
+
+  if (!SkiMatches(ski, sn->remote_ski)) {
+    SHIP_NODE_DEBUG_PRINTF("%s(), SKI does not match\n", __func__);
+    return;
+  }
+
+  // Only the handshake is aborted here. The refused SKI is discarded in
+  // CloseShipConnection(), so that it goes however the connection ends.
+  if (sn->ship_connection != NULL) {
+    SHIP_CONNECTION_ABORT_PENDING_HANDSHAKE(sn->ship_connection);
+  }
 }

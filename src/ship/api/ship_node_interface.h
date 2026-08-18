@@ -26,6 +26,7 @@
 #define SRC_SHIP_API_SHIP_NODE_INTERFACE_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "src/common/vector.h"
 #include "src/service/api/service_reader_interface.h"
@@ -78,6 +79,14 @@ struct ShipNodeInterface {
    * @brief Transformed from CancelPairingWithSKI()
    */
   void (*cancel_pairing_with_ski)(ShipNodeObject* self, const char* ski);
+  /**
+   * @brief Trust a peer held in the "hello" PENDING phase, letting it proceed
+   */
+  void (*approve_pending_handshake_with_ski)(ShipNodeObject* self, const char* ski);
+  /**
+   * @brief The "waiting" value the peer last granted, in ms, or 0 if not pending
+   */
+  uint32_t (*get_pending_waiting_ms_with_ski)(ShipNodeObject* self, const char* ski);
 };
 
 /**
@@ -122,6 +131,18 @@ struct ShipNodeObject {
  * @brief Ship Node Cancel Ppairing With SKI caller definition
  */
 #define SHIP_NODE_CANCEL_PAIRING_WITH_SKI(obj, ski) (SHIP_NODE_INTERFACE(obj)->cancel_pairing_with_ski(obj, ski))
+
+/**
+ * @brief Ship Node Approve Pending Handshake With SKI caller definition
+ */
+#define SHIP_NODE_APPROVE_PENDING_HANDSHAKE_WITH_SKI(obj, ski) \
+  (SHIP_NODE_INTERFACE(obj)->approve_pending_handshake_with_ski(obj, ski))
+
+/**
+ * @brief Ship Node Get Pending Waiting Ms With SKI caller definition
+ */
+#define SHIP_NODE_GET_PENDING_WAITING_MS_WITH_SKI(obj, ski) \
+  (SHIP_NODE_INTERFACE(obj)->get_pending_waiting_ms_with_ski(obj, ski))
 
 #ifdef __cplusplus
 }

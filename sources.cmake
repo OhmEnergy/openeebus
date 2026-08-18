@@ -194,6 +194,7 @@ set(HEADERS
   src/ship/api/ship_node_interface.h
   src/ship/api/ship_node_reader_interface.h
   src/ship/api/tls_certificate_interface.h
+  src/ship/api/trust_mode.h
   src/ship/api/websocket_creator_interface.h
   src/ship/api/http_server_interface.h
   src/ship/api/websocket_interface.h
