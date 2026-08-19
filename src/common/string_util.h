@@ -98,6 +98,22 @@ const char* StringRemoveToken(char* s, const char* token);
 char* StringWithHex(const uint8_t* data, size_t data_len);
 
 /**
+ * @brief Converts a byte array into an uppercase hexadecimal string representation.
+ *
+ * Behaves exactly like StringWithHex() but emits the digits A-F in uppercase.
+ * Some EEBUS specifications require uppercase hexadecimal values on the wire,
+ * e.g. the certificate fingerprints and nonces of a SHIP Pairing Service TXT
+ * record (SHIP Pairing Service TS 1.0.0, section 5.4).
+ *
+ * @param data Pointer to the input byte array.
+ * @param data_len Length of the input byte array.
+ * @return A dynamically allocated string containing the uppercase hexadecimal
+ *         representation of the input byte array. The caller is responsible
+ *         for deallocating the returned string with StringDelete().
+ */
+char* StringWithHexUpper(const uint8_t* data, size_t data_len);
+
+/**
  * @brief Tokenizes a string based on specified delimiters.
  *
  * This function splits the input string into tokens using the provided

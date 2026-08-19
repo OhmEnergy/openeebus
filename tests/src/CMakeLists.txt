@@ -27,6 +27,9 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/service/service/eebus_service
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ship/mdns/mdns_entry
     ${EXECUTABLE_OUTPUT_PATH}/ship/mdns/mdns_entry)
 
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ship/tls_certificate
+    ${EXECUTABLE_OUTPUT_PATH}/ship/tls_certificate)
+
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ship/ship_connection/ship_message_serialize
     ${EXECUTABLE_OUTPUT_PATH}/ship/ship_connection/ship_message_serialize)
 

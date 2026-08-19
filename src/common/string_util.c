@@ -90,7 +90,7 @@ const char* StringRemoveToken(char* s, const char* token) {
   return s;
 }
 
-char* StringWithHex(const uint8_t* data, size_t data_len) {
+static char* StringWithHexAlphaBase(const uint8_t* data, size_t data_len, char alpha_base) {
   if ((data == NULL) || (data_len == 0)) {
     return NULL;
   }
@@ -100,20 +100,26 @@ char* StringWithHex(const uint8_t* data, size_t data_len) {
     return NULL;
   }
 
-  // Skipping a series of equal to 0 octets from the beginning.
-  // "Started" means the first none-zero octet has been found
   size_t j = 0;
   for (size_t i = 0; i < data_len; ++i) {
     const uint8_t h = (data[i] >> 4) & 0x0F;
-    s[j++] = ((h >= 10) ? 'a' - 10 : '0') + h;
+    s[j++]          = ((h >= 10) ? alpha_base - 10 : '0') + h;
 
     const uint8_t l = data[i] & 0x0F;
-    s[j++] = ((l >= 10) ? 'a' - 10 : '0') + l;
+    s[j++]          = ((l >= 10) ? alpha_base - 10 : '0') + l;
   }
 
   s[j] = '\0';
 
   return s;
+}
+
+char* StringWithHex(const uint8_t* data, size_t data_len) {
+  return StringWithHexAlphaBase(data, data_len, 'a');
+}
+
+char* StringWithHexUpper(const uint8_t* data, size_t data_len) {
+  return StringWithHexAlphaBase(data, data_len, 'A');
 }
 
 char* StringToken(char* s, const char* delimiters, char** p) {
