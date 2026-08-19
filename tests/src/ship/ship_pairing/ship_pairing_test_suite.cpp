@@ -26,15 +26,15 @@ std::vector<TxtPair> ShipPairingTestSuite::AnnexAPairs() {
   return {
       {   "txtvers",            SHIP_PAIRING_TXTVERS},
       {   "parType", SHIP_PAIRING_PAR_TYPE_FP_SHA256},
-      {     "forId",                     TEST_FOR_ID},
-      {    "forPar",                    TEST_FOR_PAR},
-      {   "trustId",                   TEST_TRUST_ID},
-      {  "trustPar",                  TEST_TRUST_PAR},
+      {     "forId",                  ANNEX_A_FOR_ID},
+      {    "forPar",                 ANNEX_A_FOR_PAR},
+      {   "trustId",                ANNEX_A_TRUST_ID},
+      {  "trustPar",               ANNEX_A_TRUST_PAR},
       {"trustCurve",                     "secp256r1"},
       {      "type",        SHIP_PAIRING_TYPE_ADD_CU},
-      {"trustNonce",                TEST_TRUST_NONCE},
+      {"trustNonce",             ANNEX_A_TRUST_NONCE},
       {       "alg",    SHIP_PAIRING_ALG_HMAC_SHA256},
-      {    "digest",                     TEST_DIGEST},
+      {    "digest",                  ANNEX_A_DIGEST},
   };
 }
 

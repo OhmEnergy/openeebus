@@ -35,20 +35,7 @@ extern "C" {
 #include "src/ship/api/ship_pairing_entry.h"
 }
 
-/** @brief SHIP ID of devA, Annex A.1 */
-#define TEST_FOR_ID "i:983327_u:C8277H008F-3"
-/** @brief SHA-256 fingerprint of the devA certificate, Annex A.1 */
-#define TEST_FOR_PAR "C74B7855D3479415F62CC01E5F6D9A93EBC676057D85417ADA16FD1384338943"
-/** @brief SHIP ID of devZ, Annex A.2 */
-#define TEST_TRUST_ID "i:46925_u:43652bk-2-gt1"
-/** @brief SHA-256 fingerprint of the devZ certificate, Annex A.2 */
-#define TEST_TRUST_PAR "2CC72E781F7A7D2A08D50196C50FEDF0F7BA583F43F76C8C0DDEC9EEF0D005B4"
-/** @brief devZ-nonce, Annex A.2 */
-#define TEST_TRUST_NONCE "BDCEE427FA7208DF3C1F2A749BA6F4D4"
-/** @brief Digest of the request, Annex A.3 */
-#define TEST_DIGEST "BCBB62B2176DA2CEE545784CEB1F2A55E049451B12A549C98E8CA213F001DA25"
-/** @brief devA-secret, Annex A.1 */
-#define TEST_SECRET "7A37DCF81BDB50F8E92CFA4160CCB3DE"
+#include "tests/src/ship/annex_a.h"
 
 #define TEST_INSTANCE_NAME "Control Unit ExampleCompany C8277H008F#1"
 #define TEST_DOMAIN "local."

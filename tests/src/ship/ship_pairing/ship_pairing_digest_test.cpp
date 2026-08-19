@@ -48,7 +48,7 @@ class OwnedString {
 /** @brief The devA-secret of Annex A.1 as octets */
 std::vector<uint8_t> AnnexASecret() {
   std::vector<uint8_t> secret(SHIP_PAIRING_SECRET_SIZE);
-  EXPECT_TRUE(StringHexToBytes(TEST_SECRET, secret.data(), secret.size()));
+  EXPECT_TRUE(StringHexToBytes(ANNEX_A_SECRET, secret.data(), secret.size()));
   return secret;
 }
 
@@ -67,17 +67,17 @@ TEST_F(ShipPairingTestSuite, BuildsTheSpecifiedMessage) {
       message.Get(),
       "txtvers=1;"
       "parType=fpSha256;"
-      "forId=" TEST_FOR_ID
+      "forId=" ANNEX_A_FOR_ID
       ";"
-      "forPar=" TEST_FOR_PAR
+      "forPar=" ANNEX_A_FOR_PAR
       ";"
-      "trustId=" TEST_TRUST_ID
+      "trustId=" ANNEX_A_TRUST_ID
       ";"
-      "trustPar=" TEST_TRUST_PAR
+      "trustPar=" ANNEX_A_TRUST_PAR
       ";"
       "trustCurve=secp256r1;"
       "type=addCu;"
-      "trustNonce=" TEST_TRUST_NONCE
+      "trustNonce=" ANNEX_A_TRUST_NONCE
       ";"
       "alg=hmacSha256;"
   );
@@ -91,7 +91,7 @@ TEST_F(ShipPairingTestSuite, ReproducesTheSpecifiedDigest) {
   const OwnedString digest(ShipPairingCalcDigest(entry.get(), secret.data(), secret.size()));
   ASSERT_NE(digest.Get(), nullptr);
 
-  EXPECT_STREQ(digest.Get(), TEST_DIGEST);
+  EXPECT_STREQ(digest.Get(), ANNEX_A_DIGEST);
 }
 
 TEST_F(ShipPairingTestSuite, VerifiesTheSpecifiedRequest) {

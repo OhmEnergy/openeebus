@@ -21,10 +21,18 @@ target_sources(
   ${MAIN_PROJ_SOURCES_PATH}/ship/tls_certificate/tls_certificate.c
   ${MAIN_PROJ_SOURCES_PATH}/ship/ship_pairing/ship_pairing_entry.c
   ${MAIN_PROJ_SOURCES_PATH}/ship/ship_pairing/ship_pairing_digest.c
+  ${MAIN_PROJ_SOURCES_PATH}/ship/ship_pairing/ship_pairing.c
+
+  # Mocks. The timer is mocked so the fifteen minutes of section 4.3.1 can be
+  # reached without waiting them out, and the certificate so the node's own
+  # fingerprint is the one of the Annex A example.
+  ${MOCKS_SOURCES_PATH}/common/eebus_timer/eebus_timer_mock.cpp
+  ${MOCKS_SOURCES_PATH}/ship/tls_certificate/tls_certificate_mock.cpp
 
   ship_pairing_test_suite.cpp
   ship_pairing_entry_test.cpp
   ship_pairing_digest_test.cpp
+  ship_pairing_evaluator_test.cpp
 )
 
 target_include_directories(

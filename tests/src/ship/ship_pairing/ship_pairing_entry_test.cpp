@@ -43,15 +43,15 @@ TEST_F(ShipPairingTestSuite, ParsesEveryKeyOfTheSpecifiedRecord) {
 
   EXPECT_STREQ(ShipPairingEntryGetTxtVers(entry.get()), SHIP_PAIRING_TXTVERS);
   EXPECT_STREQ(ShipPairingEntryGetParType(entry.get()), SHIP_PAIRING_PAR_TYPE_FP_SHA256);
-  EXPECT_STREQ(ShipPairingEntryGetForId(entry.get()), TEST_FOR_ID);
-  EXPECT_STREQ(ShipPairingEntryGetForPar(entry.get()), TEST_FOR_PAR);
-  EXPECT_STREQ(ShipPairingEntryGetTrustId(entry.get()), TEST_TRUST_ID);
-  EXPECT_STREQ(ShipPairingEntryGetTrustPar(entry.get()), TEST_TRUST_PAR);
+  EXPECT_STREQ(ShipPairingEntryGetForId(entry.get()), ANNEX_A_FOR_ID);
+  EXPECT_STREQ(ShipPairingEntryGetForPar(entry.get()), ANNEX_A_FOR_PAR);
+  EXPECT_STREQ(ShipPairingEntryGetTrustId(entry.get()), ANNEX_A_TRUST_ID);
+  EXPECT_STREQ(ShipPairingEntryGetTrustPar(entry.get()), ANNEX_A_TRUST_PAR);
   EXPECT_STREQ(ShipPairingEntryGetTrustCurve(entry.get()), "secp256r1");
   EXPECT_STREQ(ShipPairingEntryGetType(entry.get()), SHIP_PAIRING_TYPE_ADD_CU);
-  EXPECT_STREQ(ShipPairingEntryGetTrustNonce(entry.get()), TEST_TRUST_NONCE);
+  EXPECT_STREQ(ShipPairingEntryGetTrustNonce(entry.get()), ANNEX_A_TRUST_NONCE);
   EXPECT_STREQ(ShipPairingEntryGetAlg(entry.get()), SHIP_PAIRING_ALG_HMAC_SHA256);
-  EXPECT_STREQ(ShipPairingEntryGetDigest(entry.get()), TEST_DIGEST);
+  EXPECT_STREQ(ShipPairingEntryGetDigest(entry.get()), ANNEX_A_DIGEST);
 
   EXPECT_STREQ(ShipPairingEntryGetName(entry.get()), TEST_INSTANCE_NAME);
   EXPECT_STREQ(ShipPairingEntryGetDomain(entry.get()), TEST_DOMAIN);
@@ -68,8 +68,8 @@ TEST_F(ShipPairingTestSuite, CopyIsIndependentOfItsSource) {
 
   source.reset();
 
-  EXPECT_STREQ(ShipPairingEntryGetDigest(copy.get()), TEST_DIGEST);
-  EXPECT_STREQ(ShipPairingEntryGetForId(copy.get()), TEST_FOR_ID);
+  EXPECT_STREQ(ShipPairingEntryGetDigest(copy.get()), ANNEX_A_DIGEST);
+  EXPECT_STREQ(ShipPairingEntryGetForId(copy.get()), ANNEX_A_FOR_ID);
   EXPECT_TRUE(ShipPairingEntryIsValid(copy.get()));
 }
 
@@ -170,7 +170,7 @@ TEST_F(ShipPairingTestSuite, RejectsHexadecimalValuesThatAreNotUppercase) {
   // Section 5.4 specifies [0-9A-F]. SKIs are rendered lowercase elsewhere in
   // SHIP, so a value in the wrong case is a plausible mistake rather than a
   // far fetched one.
-  std::string lowercase = TEST_FOR_PAR;
+  std::string lowercase = ANNEX_A_FOR_PAR;
   std::transform(lowercase.begin(), lowercase.end(), lowercase.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
@@ -211,7 +211,7 @@ TEST_F(ShipPairingTestSuite, KeepsTheFirstValueOfARepeatedKey) {
   const EntryPtr entry = ParseEntry(pairs);
   ASSERT_NE(entry, nullptr);
 
-  EXPECT_STREQ(ShipPairingEntryGetTrustId(entry.get()), TEST_TRUST_ID);
+  EXPECT_STREQ(ShipPairingEntryGetTrustId(entry.get()), ANNEX_A_TRUST_ID);
 }
 
 TEST_F(ShipPairingTestSuite, DoesNotMistakeATruncatedKeyForAKnownOne) {
@@ -221,7 +221,7 @@ TEST_F(ShipPairingTestSuite, DoesNotMistakeATruncatedKeyForAKnownOne) {
   const EntryPtr entry = ParseEntry(pairs);
   ASSERT_NE(entry, nullptr);
 
-  EXPECT_STREQ(ShipPairingEntryGetTrustId(entry.get()), TEST_TRUST_ID);
+  EXPECT_STREQ(ShipPairingEntryGetTrustId(entry.get()), ANNEX_A_TRUST_ID);
   EXPECT_TRUE(ShipPairingEntryIsValid(entry.get()));
 }
 
