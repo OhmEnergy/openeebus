@@ -319,3 +319,35 @@ TEST_F(ShipPairingTestSuite, RefusesToBuildARequestFromAnIncompleteConfiguration
 
   TlsCertificateMockDelete(cert_mock);
 }
+
+TEST_F(ShipPairingTestSuite, SurvivesTheTripThroughATxtRecord) {
+  // What a backend does with a request: write every key it exposes into a
+  // DNS-SD TXT record, and recover an entry from the record on the other side.
+  // The transport is not exercised here, but everything either end does to the
+  // record is.
+  Announcer announcer;
+  Evaluator evaluator;
+  ASSERT_NE(announcer.Get(), nullptr);
+  ASSERT_NE(evaluator.Get(), nullptr);
+  evaluator.SetAnnexASecret();
+
+  const ShipPairingEntry* const sent = ShipPairingRequestGetEntry(announcer.Get());
+  ASSERT_NE(sent, nullptr);
+
+  std::vector<TxtPair> pairs;
+  for (size_t i = 0; i < ShipPairingEntryGetTxtPairCount(); ++i) {
+    pairs.push_back({ShipPairingEntryGetTxtKey(i), ShipPairingEntryGetTxtValue(sent, i)});
+  }
+
+  const std::string record = EncodeTxtRecord(pairs);
+
+  EntryPtr received{ShipPairingEntryCreate(TEST_INSTANCE_NAME, SHIP_PAIRING_DOMAIN, 0), ShipPairingEntryDelete};
+  ASSERT_NE(received, nullptr);
+  ASSERT_EQ(
+      ShipPairingEntryParseTxtRecord(received.get(), record.data(), static_cast<uint16_t>(record.size())),
+      kEebusErrorOk
+  );
+
+  EXPECT_TRUE(ShipPairingEntryIsValid(received.get()));
+  EXPECT_EQ(SHIP_PAIRING_EVALUATE(evaluator.Get(), received.get()), kShipPairingResultAccepted);
+}

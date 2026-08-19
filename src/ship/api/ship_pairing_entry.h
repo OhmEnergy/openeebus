@@ -260,6 +260,15 @@ EebusError ShipPairingEntrySetValue(
 /**
  * @brief Number of key-value pairs a shippairing TXT record holds
  *
+ * Available at compile time for the backends that need to size an array of
+ * them. ShipPairingEntryGetTxtPairCount() returns the same number and is
+ * checked against this.
+ */
+#define SHIP_PAIRING_TXT_PAIR_COUNT 11
+
+/**
+ * @brief Number of key-value pairs a shippairing TXT record holds
+ *
  * Every key of table 1 is mandatory, so this is both how many an announcement
  * writes and how many a complete record has.
  */

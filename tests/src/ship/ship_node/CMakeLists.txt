@@ -90,6 +90,7 @@ target_sources(
   ${MAIN_PROJ_SOURCES_PATH}/ship/ship_node/ship_node.c
   ${MAIN_PROJ_SOURCES_PATH}/ship/mdns/ship_mdns_bonjour.c
   ${MAIN_PROJ_SOURCES_PATH}/ship/mdns/mdns_entry.c
+  ${MAIN_PROJ_SOURCES_PATH}/ship/ship_pairing/ship_pairing_entry.c
   ${MAIN_PROJ_SOURCES_PATH}/ship/mdns/mdns_debug.c
   ${MAIN_PROJ_SOURCES_PATH}/ship/tls_certificate/tls_certificate.c
   ${MAIN_PROJ_SOURCES_PATH}/common/eebus_device_info.c

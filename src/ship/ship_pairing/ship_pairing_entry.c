@@ -54,8 +54,14 @@ typedef struct {
 #define SHIP_PAIRING_ENTRY_FIELD_OFFSET(field) STRUCT_MEMBER_OFFSET(ShipPairingEntry, field)
 #define SHIP_PAIRING_ENTRY_MAPPING(key, field) {key, SHIP_PAIRING_ENTRY_FIELD_OFFSET(field)}
 
-/** @brief The keys of table 1, in the order the digest message needs them */
-static const ShipPairingEntryMapping ship_pairing_entry_lut[] = {
+/**
+ * @brief The keys of table 1, in the order the digest message needs them
+ *
+ * Sized explicitly so that adding a key without also raising
+ * SHIP_PAIRING_TXT_PAIR_COUNT, which backends use to size their own arrays,
+ * fails to compile.
+ */
+static const ShipPairingEntryMapping ship_pairing_entry_lut[SHIP_PAIRING_TXT_PAIR_COUNT] = {
     SHIP_PAIRING_ENTRY_MAPPING("txtvers", txtvers),
     SHIP_PAIRING_ENTRY_MAPPING("parType", par_type),
     SHIP_PAIRING_ENTRY_MAPPING("forId", for_id),
