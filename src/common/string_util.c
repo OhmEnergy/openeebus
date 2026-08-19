@@ -122,6 +122,44 @@ char* StringWithHexUpper(const uint8_t* data, size_t data_len) {
   return StringWithHexAlphaBase(data, data_len, 'A');
 }
 
+static int StringHexDigitValue(char c) {
+  if ((c >= '0') && (c <= '9')) {
+    return c - '0';
+  }
+
+  if ((c >= 'a') && (c <= 'f')) {
+    return c - 'a' + 10;
+  }
+
+  if ((c >= 'A') && (c <= 'F')) {
+    return c - 'A' + 10;
+  }
+
+  return -1;
+}
+
+bool StringHexToBytes(const char* s, uint8_t* data, size_t data_len) {
+  if ((s == NULL) || (data == NULL) || (data_len == 0)) {
+    return false;
+  }
+
+  if (strlen(s) != (data_len * 2)) {
+    return false;
+  }
+
+  for (size_t i = 0; i < data_len; ++i) {
+    const int h = StringHexDigitValue(s[i * 2]);
+    const int l = StringHexDigitValue(s[(i * 2) + 1]);
+    if ((h < 0) || (l < 0)) {
+      return false;
+    }
+
+    data[i] = (uint8_t)((h << 4) | l);
+  }
+
+  return true;
+}
+
 char* StringToken(char* s, const char* delimiters, char** p) {
   if ((s == NULL) && ((p == NULL) || (*p == NULL))) {
     return NULL;
