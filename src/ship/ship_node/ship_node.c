@@ -78,6 +78,9 @@ static void Start(ShipNodeObject* self);
 static void Stop(ShipNodeObject* self);
 static void RegisterRemoteSki(ShipNodeObject* self, const char* ski, bool is_trusted);
 static void RegisterRemoteFingerprint(ShipNodeObject* self, const char* fingerprint);
+static ShipPairingObject* GetShipPairing(ShipNodeObject* self);
+static EebusError AnnounceShipPairingRequest(ShipNodeObject* self, const ShipPairingEntry* entry);
+static void ShipNodeOnPairingEntriesFoundCallback(Vector* found_entries, void* ctx);
 static void UnregisterRemoteSki(ShipNodeObject* self, const char* ski);
 static void CancelPairingWithSki(ShipNodeObject* self, const char* ski);
 static void ShipNodeUnregisterSki(ShipNodeObject* self, const char* ski);
@@ -98,6 +101,8 @@ static const ShipNodeInterface ship_node_methods = {
     .stop                    = Stop,
     .register_remote_ski     = RegisterRemoteSki,
     .register_remote_fingerprint = RegisterRemoteFingerprint,
+    .get_ship_pairing            = GetShipPairing,
+    .announce_ship_pairing_request = AnnounceShipPairingRequest,
     .unregister_remote_ski   = UnregisterRemoteSki,
     .cancel_pairing_with_ski = CancelPairingWithSki,
 };
@@ -168,6 +173,10 @@ void ShipNodeConstruct(
   self->connections_table     = NULL;
   self->ship_node_reader      = ship_node_reader;
   self->tsl_certificate       = tsl_certificate;
+
+  // Built from this node's own identity, which the request it evaluates has to
+  // name to be addressed here. Created after the certificate is in place.
+  self->ship_pairing          = ShipPairingCreate(local_service_details->ship_id, tsl_certificate);
   self->local_service_details = local_service_details;
 
   self->http_server = HttpServerCreate(port, tsl_certificate, ShipNodeOnWebsocketServerConnectionCallback, self);
@@ -221,6 +230,9 @@ void Destruct(InfoProviderObject* self) {
 
   StringDelete((char*)sn->remote_fingerprint);
   sn->remote_fingerprint = NULL;
+
+  ShipPairingDelete(sn->ship_pairing);
+  sn->ship_pairing = NULL;
 
   if (sn->mdns != NULL) {
     SHIP_MDNS_DESTRUCT(sn->mdns);
@@ -352,6 +364,66 @@ DataReaderObject* SetupRemoteDevice(InfoProviderObject* self, const char* ski, D
   const ShipNode* const sn = SHIP_NODE(self);
 
   return SHIP_NODE_READER_SETUP_REMOTE_DEVICE(sn->ship_node_reader, ski, data_writer);
+}
+
+ShipPairingObject* GetShipPairing(ShipNodeObject* self) {
+  return SHIP_NODE(self)->ship_pairing;
+}
+
+EebusError AnnounceShipPairingRequest(ShipNodeObject* self, const ShipPairingEntry* entry) {
+  ShipNode* const sn = SHIP_NODE(self);
+
+  if (sn->mdns == NULL) {
+    return kEebusErrorInit;
+  }
+
+  if (entry == NULL) {
+    ShipMdnsDeregisterPairingService(sn->mdns);
+    return kEebusErrorOk;
+  }
+
+  return ShipMdnsRegisterPairingService(sn->mdns, entry);
+}
+
+/**
+ * @brief Evaluates the shippairing requests a browse turned up
+ *
+ * Everything discovered arrives here, because only the evaluator can tell which
+ * requests are ours and genuine. Section 9 forbids evaluating two at once, and
+ * they are taken one at a time from the browsing thread.
+ */
+void ShipNodeOnPairingEntriesFoundCallback(Vector* found_entries, void* ctx) {
+  ShipNode* const sn = (ShipNode*)ctx;
+
+  if ((found_entries == NULL) || (sn == NULL)) {
+    return;
+  }
+
+  for (size_t i = 0; (i < VectorGetSize(found_entries)) && !sn->cancel; ++i) {
+    const ShipPairingEntry* const entry = (const ShipPairingEntry*)VectorGetElement(found_entries, i);
+    if ((entry == NULL) || (sn->ship_pairing == NULL)) {
+      continue;
+    }
+
+    if (SHIP_PAIRING_EVALUATE(sn->ship_pairing, entry) != kShipPairingResultAccepted) {
+      continue;
+    }
+
+    SHIP_NODE_DEBUG_PRINTF("%s(), accepted a shippairing request from %s\n", __func__, entry->trust_id);
+
+    // Section 10.2: from here the node is recognised by the certificate the
+    // request named, since nothing yet knows its SKI.
+    RegisterRemoteFingerprint(SHIP_NODE_OBJECT(sn), entry->trust_par);
+
+    // Section 10.4: the trust store is the integrator's, so it is told to
+    // record the node. Section 10.3 requires any previously paired node to be
+    // untrusted at the same time.
+    ShipNodeReaderOnShipPairingAccepted(sn->ship_node_reader, entry->trust_id, entry->trust_par, entry->trust_curve);
+  }
+
+  VectorFreeElements(found_entries);
+  VectorDestruct(found_entries);
+  EEBUS_FREE(found_entries);
 }
 
 void RegisterRemoteFingerprint(ShipNodeObject* self, const char* fingerprint) {
@@ -550,6 +622,11 @@ void Start(ShipNodeObject* self) {
   if (ShipNodeIsServerSupported(sn)) {
     HTTP_SERVER_START(sn->http_server);
   }
+
+  // A node with no secret set evaluates nothing, so browsing costs one query
+  // per cycle and is left on rather than made conditional on configuration that
+  // usually arrives later than this.
+  ShipMdnsStartPairingBrowse(sn->mdns, ShipNodeOnPairingEntriesFoundCallback, sn);
 
   SHIP_MDNS_START(sn->mdns);
 

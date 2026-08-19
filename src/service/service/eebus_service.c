@@ -67,6 +67,12 @@ static void UnregisterRemoteSki(EebusServiceObject* self, const char* ski);
 static void CancelPairingWithSki(EebusServiceObject* self, const char* ski);
 static void SetPairingPossible(EebusServiceObject* self, bool is_pairing_possible);
 static const char* GetLocalSki(EebusServiceObject* self);
+static void OnShipPairingAccepted(
+    ShipNodeReaderObject* self,
+    const char* trust_ship_id,
+    const char* trust_fingerprint,
+    const char* trust_curve
+);
 
 static const EebusServiceInterface service_methods = {
     .ship_node_reader_interface = {
@@ -78,6 +84,7 @@ static const EebusServiceInterface service_methods = {
         .on_ship_id_update            = OnShipIdUpdate,
         .on_ship_state_update         = OnHandleShipStateUpdate,
         .is_waiting_for_trust_allowed = IsWaitingForTrustAllowed,
+        .on_ship_pairing_accepted     = OnShipPairingAccepted,
     },
 
     .start                               = Start,
@@ -244,6 +251,30 @@ void OnShipIdUpdate(ShipNodeReaderObject* self, const char* ski, const char* shi
 
 void OnHandleShipStateUpdate(ShipNodeReaderObject* self, const char* ski, SmeState state) {
   SERVICE_READER_ON_SHIP_STATE_UPDATE(EEBUS_SERVICE(self)->service_reader, ski, state);
+}
+
+/**
+ * @brief Passes on a shippairing request that established trust
+ *
+ * The trust store belongs to the integrator, so the report is relayed rather
+ * than acted on here (SHIP Pairing Service TS 1.0.0, section 10.4). What the
+ * integrator has to do with it is create or update the entry for the node,
+ * record the fingerprint against it, and untrust whichever node a previous
+ * shippairing request had trusted (section 10.3).
+ */
+void OnShipPairingAccepted(
+    ShipNodeReaderObject* self,
+    const char* trust_ship_id,
+    const char* trust_fingerprint,
+    const char* trust_curve
+) {
+  EebusService* const service = EEBUS_SERVICE(self);
+
+  ServiceReaderOnShipPairingAccepted(service->service_reader, trust_ship_id, trust_fingerprint, trust_curve);
+}
+
+ShipNodeObject* EebusServiceGetShipNode(EebusServiceObject* self) {
+  return (self == NULL) ? NULL : EEBUS_SERVICE(self)->ship_node;
 }
 
 bool IsWaitingForTrustAllowed(ShipNodeReaderObject* self, const char* ski) {

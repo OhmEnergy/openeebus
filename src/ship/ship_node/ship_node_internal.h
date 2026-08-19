@@ -31,6 +31,7 @@
 #include "src/ship/api/tls_certificate_interface.h"
 #include "src/ship/api/websocket_creator_interface.h"
 #include "src/ship/ship_connection/types.h"
+#include "src/ship/ship_pairing/ship_pairing.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -81,6 +82,9 @@ struct ShipNode {
    * trust came from a classic SHIP mechanism.
    */
   const char* remote_fingerprint;
+
+  /** Evaluates the shippairing requests addressed to this node, chapter 9 */
+  ShipPairingObject* ship_pairing;
   bool connection_attempt_running;
   ShipRole role;
 };

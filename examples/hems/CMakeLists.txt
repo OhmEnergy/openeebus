@@ -24,6 +24,7 @@ endif()
 target_sources(${PROJECT_NAME}
     PRIVATE
     main.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/pairing_cmd.c
     hems.c
     eg_lpc_listener.c
     eg_lpp_listener.c

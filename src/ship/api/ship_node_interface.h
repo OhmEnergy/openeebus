@@ -30,6 +30,7 @@
 #include "src/common/vector.h"
 #include "src/service/api/service_reader_interface.h"
 #include "src/ship/api/info_provider_interface.h"
+#include "src/ship/api/ship_pairing_interface.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -95,6 +96,32 @@ struct ShipNodeInterface {
    * @param fingerprint Uppercase hexadecimal digits, or NULL to expect none
    */
   void (*register_remote_fingerprint)(ShipNodeObject* self, const char* fingerprint);
+
+  /**
+   * @brief The evaluator for the shippairing requests addressed to this node
+   *
+   * Exposed rather than wrapped, because everything an integrator has to do
+   * with it, providing the secret and loading and saving the ring buffer, is
+   * already on its own interface (SHIP Pairing Service TS 1.0.0, chapters 9
+   * and 11). Until a secret is set on it, no request can be authenticated.
+   *
+   * Appended to the end of the table and may be NULL.
+   *
+   * @return The evaluator, owned by the node, or NULL if it has none
+   */
+  ShipPairingObject* (*get_ship_pairing)(ShipNodeObject* self);
+
+  /**
+   * @brief Announces a shippairing request from this node
+   *
+   * For a node asking to be trusted. Announcing again replaces the previous
+   * announcement, which is withdrawn first (section 5.5).
+   *
+   * Appended to the end of the table and may be NULL.
+   *
+   * @param entry Request to announce, or NULL to withdraw one
+   */
+  EebusError (*announce_ship_pairing_request)(ShipNodeObject* self, const ShipPairingEntry* entry);
 };
 
 /**
@@ -115,6 +142,28 @@ struct ShipNodeObject {
  * A function rather than a macro, because the method is optional and has to be
  * checked for before it is called.
  */
+/**
+ * @brief Gets the evaluator for shippairing requests
+ * @return The evaluator, or NULL if the node has none
+ */
+static inline ShipPairingObject* ShipNodeGetShipPairing(ShipNodeObject* obj) {
+  const ShipNodeInterface* const iface = (const ShipNodeInterface*)obj->interface_;
+  return (iface->get_ship_pairing == NULL) ? NULL : iface->get_ship_pairing(obj);
+}
+
+/**
+ * @brief Announces a shippairing request from this node
+ * @return kEebusErrorNotSupported if the node does not implement it
+ */
+static inline EebusError ShipNodeAnnounceShipPairingRequest(ShipNodeObject* obj, const ShipPairingEntry* entry) {
+  const ShipNodeInterface* const iface = (const ShipNodeInterface*)obj->interface_;
+  if (iface->announce_ship_pairing_request == NULL) {
+    return kEebusErrorNotSupported;
+  }
+
+  return iface->announce_ship_pairing_request(obj, entry);
+}
+
 static inline void ShipNodeRegisterRemoteFingerprint(ShipNodeObject* obj, const char* fingerprint) {
   const ShipNodeInterface* const iface = (const ShipNodeInterface*)obj->interface_;
   if (iface->register_remote_fingerprint != NULL) {
