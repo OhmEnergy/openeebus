@@ -35,6 +35,7 @@ set(SOURCES
   src/ship/ship_pairing/ship_pairing.c
   src/ship/ship_pairing/ship_pairing_entry.c
   src/ship/ship_pairing/ship_pairing_digest.c
+  src/ship/ship_pairing/ship_pairing_request.c
   src/ship/websocket/websocket.c
   src/ship/websocket/websocket_client_creator.c
   src/ship/websocket/websocket_server_creator.c
@@ -210,6 +211,8 @@ set(HEADERS
   src/ship/ship_pairing/ship_pairing.h
   src/ship/ship_pairing/ship_pairing_internal.h
   src/ship/ship_pairing/ship_pairing_digest.h
+  src/ship/ship_pairing/ship_pairing_request.h
+  src/ship/ship_pairing/ship_pairing_request_internal.h
   src/ship/ship_connection/ship_connection.h
   src/ship/ship_connection/ship_connection_debug.h
   src/ship/ship_connection/ship_connection_internal.h

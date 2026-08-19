@@ -43,6 +43,17 @@ extern "C" {
 #endif  // __cplusplus
 
 /**
+ * @defgroup ShipPairingServiceName Service name and domain
+ *
+ * The service name "shippairing" is registered with the IANA for TCP, and the
+ * domain is the link local one (section 5.2).
+ * @{
+ */
+#define SHIP_PAIRING_SERVICE_TYPE "_shippairing._tcp"
+#define SHIP_PAIRING_DOMAIN "local."
+/** @} */
+
+/**
  * @defgroup ShipPairingTxtValues Permitted TXT record values
  *
  * The only values this version of the specification defines
@@ -245,6 +256,31 @@ EebusError ShipPairingEntrySetValue(
     const char* value_ptr,
     size_t value_size
 );
+
+/**
+ * @brief Number of key-value pairs a shippairing TXT record holds
+ *
+ * Every key of table 1 is mandatory, so this is both how many an announcement
+ * writes and how many a complete record has.
+ */
+size_t ShipPairingEntryGetTxtPairCount(void);
+
+/**
+ * @brief Gets the name of a TXT record key, in the order table 1 lists them
+ * @param index Index below ShipPairingEntryGetTxtPairCount()
+ * @return Key name, or NULL if @p index is out of range. The returned string is
+ *         static and MUST NOT be deallocated.
+ */
+const char* ShipPairingEntryGetTxtKey(size_t index);
+
+/**
+ * @brief Gets the value an entry holds for a TXT record key
+ * @param entry Entry to read
+ * @param index Index below ShipPairingEntryGetTxtPairCount()
+ * @return Value, or NULL if @p index is out of range or the key is unset. The
+ *         returned string belongs to @p entry.
+ */
+const char* ShipPairingEntryGetTxtValue(const ShipPairingEntry* entry, size_t index);
 
 /**
  * @brief Reports whether the TXT record of an entry conforms to the specification

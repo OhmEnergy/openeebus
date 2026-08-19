@@ -250,6 +250,26 @@ EebusError ShipPairingEntryParseTxtRecord(ShipPairingEntry* entry, const char* t
   return kEebusErrorOk;
 }
 
+size_t ShipPairingEntryGetTxtPairCount(void) {
+  return ARRAY_SIZE(ship_pairing_entry_lut);
+}
+
+const char* ShipPairingEntryGetTxtKey(size_t index) {
+  if (index >= ARRAY_SIZE(ship_pairing_entry_lut)) {
+    return NULL;
+  }
+
+  return ship_pairing_entry_lut[index].key;
+}
+
+const char* ShipPairingEntryGetTxtValue(const ShipPairingEntry* entry, size_t index) {
+  if ((entry == NULL) || (index >= ARRAY_SIZE(ship_pairing_entry_lut))) {
+    return NULL;
+  }
+
+  return *(const char* const*)((const uint8_t*)entry + ship_pairing_entry_lut[index].offset);
+}
+
 bool ShipPairingEntryIsUppercaseHex(const char* s, size_t digits) {
   if (StringIsEmpty(s) || (strlen(s) != digits)) {
     return false;

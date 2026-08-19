@@ -22,6 +22,7 @@ target_sources(
   ${MAIN_PROJ_SOURCES_PATH}/ship/ship_pairing/ship_pairing_entry.c
   ${MAIN_PROJ_SOURCES_PATH}/ship/ship_pairing/ship_pairing_digest.c
   ${MAIN_PROJ_SOURCES_PATH}/ship/ship_pairing/ship_pairing.c
+  ${MAIN_PROJ_SOURCES_PATH}/ship/ship_pairing/ship_pairing_request.c
 
   # Mocks. The timer is mocked so the fifteen minutes of section 4.3.1 can be
   # reached without waiting them out, and the certificate so the node's own
@@ -33,6 +34,7 @@ target_sources(
   ship_pairing_entry_test.cpp
   ship_pairing_digest_test.cpp
   ship_pairing_evaluator_test.cpp
+  ship_pairing_request_test.cpp
 )
 
 target_include_directories(
