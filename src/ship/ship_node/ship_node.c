@@ -77,6 +77,7 @@ static DataReaderObject* SetupRemoteDevice(InfoProviderObject* self, const char*
 static void Start(ShipNodeObject* self);
 static void Stop(ShipNodeObject* self);
 static void RegisterRemoteSki(ShipNodeObject* self, const char* ski, bool is_trusted);
+static void RegisterRemoteFingerprint(ShipNodeObject* self, const char* fingerprint);
 static void UnregisterRemoteSki(ShipNodeObject* self, const char* ski);
 static void CancelPairingWithSki(ShipNodeObject* self, const char* ski);
 static void ShipNodeUnregisterSki(ShipNodeObject* self, const char* ski);
@@ -96,6 +97,7 @@ static const ShipNodeInterface ship_node_methods = {
     .start                   = Start,
     .stop                    = Stop,
     .register_remote_ski     = RegisterRemoteSki,
+    .register_remote_fingerprint = RegisterRemoteFingerprint,
     .unregister_remote_ski   = UnregisterRemoteSki,
     .cancel_pairing_with_ski = CancelPairingWithSki,
 };
@@ -160,7 +162,8 @@ void ShipNodeConstruct(
   self->cancel                = false;
   self->connection_thread     = NULL;
 
-  self->remote_ski = NULL;
+  self->remote_ski         = NULL;
+  self->remote_fingerprint = NULL;
 
   self->connections_table     = NULL;
   self->ship_node_reader      = ship_node_reader;
@@ -215,6 +218,9 @@ void Destruct(InfoProviderObject* self) {
 
   StringDelete(sn->remote_ski);
   sn->remote_ski = NULL;
+
+  StringDelete((char*)sn->remote_fingerprint);
+  sn->remote_fingerprint = NULL;
 
   if (sn->mdns != NULL) {
     SHIP_MDNS_DESTRUCT(sn->mdns);
@@ -348,6 +354,15 @@ DataReaderObject* SetupRemoteDevice(InfoProviderObject* self, const char* ski, D
   return SHIP_NODE_READER_SETUP_REMOTE_DEVICE(sn->ship_node_reader, ski, data_writer);
 }
 
+void RegisterRemoteFingerprint(ShipNodeObject* self, const char* fingerprint) {
+  ShipNode* const sn = SHIP_NODE(self);
+
+  EEBUS_MUTEX_LOCK(sn->mutex);
+  StringDelete((char*)sn->remote_fingerprint);
+  sn->remote_fingerprint = StringCopy(fingerprint);
+  EEBUS_MUTEX_UNLOCK(sn->mutex);
+}
+
 bool SkiMatches(const char* ski_a, const char* ski_b) {
   if (StringIsEmpty(ski_a) || StringIsEmpty(ski_b)) {
     return false;
@@ -476,9 +491,22 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
     return -1;
   }
 
-  // Check the SKI
+  // Check the SKI, or the certificate the peer presented
   EEBUS_MUTEX_LOCK(sn->mutex);
-  bool is_ski_trusted = SkiMatches(ski, sn->remote_ski);
+  // A peer trusted from a shippairing request is recognised by the certificate
+  // it presents, because the request names a fingerprint and never an SKI.
+  const char* const peer_fingerprint = HttpServerGetPeerFingerprint(sn->http_server);
+
+  bool is_ski_trusted = ShipNodeIsPeerRecognised(ski, sn->remote_ski, peer_fingerprint, sn->remote_fingerprint);
+
+  // Section 10.2, note: the SKI may be learned once the certificate has been
+  // verified. It is recorded so the rest of SHIP, which works in SKIs, has one
+  // to work with. It is not what admitted the peer.
+  if (is_ski_trusted && StringIsEmpty(sn->remote_ski)) {
+    SHIP_NODE_DEBUG_PRINTF("%s(), peer recognised by its certificate fingerprint\n", __func__);
+    sn->remote_ski = StringCopy(ski);
+  }
+
   if (!is_ski_trusted && StringIsEmpty(sn->remote_ski)) {
     // Pairing mode: no remote SKI registered yet.
     // Delegate to the info-provider (service layer) to decide whether to trust this SKI.

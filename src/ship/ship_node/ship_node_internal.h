@@ -22,6 +22,7 @@
 #include "src/common/api/eebus_queue_interface.h"
 #include "src/common/api/eebus_thread_interface.h"
 #include "src/common/service_details.h"
+#include "src/common/string_util.h"
 #include "src/ship/api/http_server_interface.h"
 #include "src/ship/api/ship_connection_interface.h"
 #include "src/ship/api/ship_mdns_interface.h"
@@ -71,11 +72,56 @@ struct ShipNode {
   ShipConnectionObject* ship_connection;
   WebsocketCreatorObject* websocket_creator;
   HttpServerObject* http_server;
+
+  /**
+   * @brief Certificate fingerprint the trusted node is expected to present
+   *
+   * Set when trust came from a shippairing request, which names a fingerprint
+   * and not an SKI (SHIP Pairing Service TS 1.0.0, section 10.2). NULL when
+   * trust came from a classic SHIP mechanism.
+   */
+  const char* remote_fingerprint;
   bool connection_attempt_running;
   ShipRole role;
 };
 
 #define SHIP_NODE(obj) ((ShipNode*)(obj))
+
+/**
+ * @brief Reports whether a connecting peer is the one this node trusts
+ *
+ * The whole of the decision, kept apart from the connection handling so that it
+ * can be read and tested on its own. A peer is recognised by presenting the
+ * trusted SKI, or by presenting the certificate whose fingerprint is trusted
+ * (SHIP Pairing Service TS 1.0.0, section 10.2). The second is an additional
+ * way to be recognised and never a way to bypass the first.
+ *
+ * @param peer_ski SKI derived from the certificate the peer presented
+ * @param trusted_ski SKI this node trusts, or NULL if none
+ * @param peer_fingerprint Fingerprint of the certificate the peer presented
+ * @param trusted_fingerprint Fingerprint this node trusts, or NULL if none
+ * @return true if the peer is recognised
+ */
+static inline bool ShipNodeIsPeerRecognised(
+    const char* peer_ski,
+    const char* trusted_ski,
+    const char* peer_fingerprint,
+    const char* trusted_fingerprint
+) {
+  if (!StringIsEmpty(peer_ski) && !StringIsEmpty(trusted_ski) && (strcmp(peer_ski, trusted_ski) == 0)) {
+    return true;
+  }
+
+  // Section 10.2: a fingerprint that matches is to be treated exactly as a
+  // trusted SKI is. It is an additional way to be recognised, never a way to
+  // skip being recognised: with nothing registered to compare against, or
+  // nothing presented to compare, no one is recognised here.
+  if (StringIsEmpty(trusted_fingerprint) || StringIsEmpty(peer_fingerprint)) {
+    return false;
+  }
+
+  return strcmp(peer_fingerprint, trusted_fingerprint) == 0;
+}
 
 #ifdef __cplusplus
 }

@@ -78,6 +78,23 @@ struct ShipNodeInterface {
    * @brief Transformed from CancelPairingWithSKI()
    */
   void (*cancel_pairing_with_ski)(ShipNodeObject* self, const char* ski);
+
+  /**
+   * @brief Sets the certificate fingerprint the trusted node is expected to present
+   *
+   * A node trusted from a shippairing request is identified by the fingerprint
+   * of its certificate rather than by its SKI, which the request does not carry
+   * (SHIP Pairing Service TS 1.0.0, section 10.2). Once set, a peer presenting
+   * that certificate is admitted exactly as a peer presenting the registered
+   * SKI is.
+   *
+   * Appended to the end of the table and may be NULL, so that a node
+   * implemented outside this repository neither has to change nor stops
+   * compiling.
+   *
+   * @param fingerprint Uppercase hexadecimal digits, or NULL to expect none
+   */
+  void (*register_remote_fingerprint)(ShipNodeObject* self, const char* fingerprint);
 };
 
 /**
@@ -91,6 +108,19 @@ struct ShipNodeObject {
  * @brief Ship Node pointer typecast
  */
 #define SHIP_NODE_OBJECT(obj) ((ShipNodeObject*)(obj))
+
+/**
+ * @brief Sets the certificate fingerprint the trusted node is expected to present
+ *
+ * A function rather than a macro, because the method is optional and has to be
+ * checked for before it is called.
+ */
+static inline void ShipNodeRegisterRemoteFingerprint(ShipNodeObject* obj, const char* fingerprint) {
+  const ShipNodeInterface* const iface = (const ShipNodeInterface*)obj->interface_;
+  if (iface->register_remote_fingerprint != NULL) {
+    iface->register_remote_fingerprint(obj, fingerprint);
+  }
+}
 
 /**
  * @brief Ship Node Interface class pointer typecast

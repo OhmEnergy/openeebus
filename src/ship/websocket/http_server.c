@@ -74,6 +74,15 @@ struct HttpServer {
   WebsocketObject* ws;
   bool ws_is_active;
 
+  /**
+   * @brief Fingerprint of the connecting peer's certificate
+   *
+   * Held only for the duration of the conn_establish_cb call, which is where a
+   * node decides whether to admit the peer, and cleared straight afterwards so
+   * that a later caller cannot read a stale one as though it were current.
+   */
+  const char* peer_fingerprint;
+
   int port;
   const TlsCertificateObject* tls_cert;
   struct lws_protocols protocols[2];
@@ -86,12 +95,18 @@ struct HttpServer {
 static void Destruct(HttpServerObject* self);
 static EebusError Start(HttpServerObject* self);
 static void Stop(HttpServerObject* self);
+static const char* GetPeerFingerprint(const HttpServerObject* self);
 
 static const HttpServerInterface http_server_methods = {
-    .destruct = Destruct,
-    .start    = Start,
-    .stop     = Stop,
+    .destruct             = Destruct,
+    .start                = Start,
+    .stop                 = Stop,
+    .get_peer_fingerprint = GetPeerFingerprint,
 };
+
+const char* GetPeerFingerprint(const HttpServerObject* self) {
+  return HTTP_SERVER(self)->peer_fingerprint;
+}
 
 static void HttpServerConstruct(
     HttpServer* self,
@@ -137,7 +152,8 @@ void HttpServerConstruct(
   self->conn_establish_ctx = conn_establish_ctx;
 
   self->port         = port;
-  self->ws           = NULL;
+  self->ws               = NULL;
+  self->peer_fingerprint = NULL;
   self->ws_is_active = false;
 
   self->lws_ctx = NULL;
@@ -305,7 +321,17 @@ int HttpServerOnClientConnect(HttpServer* self, struct lws* wsi) {
 
   WebsocketCreatorObject* websocket_creator = WebsocketServerCreatorCreate(HTTP_SERVER_OBJECT(self), wsi);
 
+  // SHIP Pairing Service authenticates a peer by the fingerprint of the
+  // certificate it presented rather than by its SKI (section 10.2). Both come
+  // from this handshake, and the fingerprint is published only while the
+  // decision that needs it is being taken.
+  self->peer_fingerprint = WebsocketGetFingerprintWithWsi(wsi);
+
   const int ret = self->conn_establish_cb(ski, websocket_creator, self->conn_establish_ctx);
+
+  StringDelete((char*)self->peer_fingerprint);
+  self->peer_fingerprint = NULL;
+
   WebsocketCreatorDelete(websocket_creator);
   StringDelete((char*)ski);
   if (ret != 0) {
