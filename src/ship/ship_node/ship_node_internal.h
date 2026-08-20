@@ -29,6 +29,7 @@
 #include "src/ship/api/ship_node_interface.h"
 #include "src/ship/api/ship_node_reader_interface.h"
 #include "src/ship/api/tls_certificate_interface.h"
+#include "src/ship/api/trust_mode.h"
 #include "src/ship/api/websocket_creator_interface.h"
 #include "src/ship/ship_connection/types.h"
 #include "src/ship/ship_pairing/ship_pairing.h"
@@ -87,6 +88,10 @@ struct ShipNode {
   ShipPairingObject* ship_pairing;
   bool connection_attempt_running;
   ShipRole role;
+  /** When a foreign SKI is trusted, see EebusTrustMode */
+  EebusTrustMode trust_mode;
+  /** Whether remote_ski is trusted, as opposed to provisionally accepted */
+  bool remote_ski_trusted;
 };
 
 #define SHIP_NODE(obj) ((ShipNode*)(obj))
@@ -106,6 +111,30 @@ struct ShipNode {
  * @param trusted_fingerprint Fingerprint this node trusts, or NULL if none
  * @return true if the peer is recognised
  */
+/**
+ * @brief Reports whether a peer presented the certificate that is trusted
+ *
+ * Section 10.2: a fingerprint that matches is to be treated exactly as a
+ * trusted SKI is. It is an additional way to be recognised, never a way to skip
+ * being recognised: with nothing registered to compare against, or nothing
+ * presented to compare, nobody is recognised here.
+ *
+ * Separate from ShipNodeIsPeerRecognised() because a peer recognised this way
+ * is also trusted outright rather than held for a decision, so the connection
+ * handling has to be able to tell which of the two recognised it.
+ *
+ * @param peer_fingerprint Fingerprint of the certificate the peer presented
+ * @param trusted_fingerprint Fingerprint this node trusts, or NULL if none
+ * @return true if the peer presented the trusted certificate
+ */
+static inline bool ShipNodeFingerprintMatches(const char* peer_fingerprint, const char* trusted_fingerprint) {
+  if (StringIsEmpty(trusted_fingerprint) || StringIsEmpty(peer_fingerprint)) {
+    return false;
+  }
+
+  return strcmp(peer_fingerprint, trusted_fingerprint) == 0;
+}
+
 static inline bool ShipNodeIsPeerRecognised(
     const char* peer_ski,
     const char* trusted_ski,
@@ -116,15 +145,7 @@ static inline bool ShipNodeIsPeerRecognised(
     return true;
   }
 
-  // Section 10.2: a fingerprint that matches is to be treated exactly as a
-  // trusted SKI is. It is an additional way to be recognised, never a way to
-  // skip being recognised: with nothing registered to compare against, or
-  // nothing presented to compare, no one is recognised here.
-  if (StringIsEmpty(trusted_fingerprint) || StringIsEmpty(peer_fingerprint)) {
-    return false;
-  }
-
-  return strcmp(peer_fingerprint, trusted_fingerprint) == 0;
+  return ShipNodeFingerprintMatches(peer_fingerprint, trusted_fingerprint);
 }
 
 #ifdef __cplusplus
