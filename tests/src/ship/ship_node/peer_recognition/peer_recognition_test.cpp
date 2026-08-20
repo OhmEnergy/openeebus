@@ -82,6 +82,51 @@ TEST(ShipNodePeerRecognitionTest, DoesNotConfuseTheTwoKindsOfIdentity) {
  * SHIP Pairing Service TS 1.0.0, section 10.4: a service trusted either way is
  * one entry, which may carry both an SKI and a fingerprint.
  */
+/*
+ * Whether a connection already in hand is promoted when a shippairing request is
+ * accepted. Section 4.2 has devZ connecting before it announces and retrying
+ * until it is trusted, so at the moment a request is accepted the peer it names
+ * is usually already parked in the hello PENDING phase. Without this the
+ * decision reaches only the next connection, and the one in hand waits out its
+ * own patience first - which on a bench is a minute or two of an installation
+ * looking like it failed.
+ */
+
+TEST(ShipNodePromotePendingTest, PromotesThePeerThatPresentedTheCertificate) {
+  EXPECT_TRUE(ShipNodeShouldPromotePendingPeer(true, "AABB", "AABB"));
+}
+
+/* The whole reason this is decided on the certificate. The SKI a pending
+ * connection arrived with says only who dialled in first; promoting on that
+ * basis would admit them on the strength of a request naming a different
+ * node's certificate. Nothing here can be satisfied by an SKI. */
+TEST(ShipNodePromotePendingTest, PromotesNobodyWhoPresentedADifferentCertificate) {
+  EXPECT_FALSE(ShipNodeShouldPromotePendingPeer(true, "AABB", "CCDD"));
+}
+
+TEST(ShipNodePromotePendingTest, PromotesNothingWithNoConnectionInHand) {
+  // The fingerprint of a peer that has since gone is not a peer to promote, and
+  // approving a handshake that does not exist is at best a no-op.
+  EXPECT_FALSE(ShipNodeShouldPromotePendingPeer(false, "AABB", "AABB"));
+}
+
+/* An unset fingerprint on either side must not become a way to be promoted.
+ * That is the direction that matters: a node with nothing registered, or a
+ * backend that reports no peer certificate, must promote nobody rather than
+ * everybody. */
+TEST(ShipNodePromotePendingTest, PromotesNobodyWithNothingToCompare) {
+  EXPECT_FALSE(ShipNodeShouldPromotePendingPeer(true, nullptr, "AABB"));
+  EXPECT_FALSE(ShipNodeShouldPromotePendingPeer(true, "", "AABB"));
+  EXPECT_FALSE(ShipNodeShouldPromotePendingPeer(true, "AABB", nullptr));
+  EXPECT_FALSE(ShipNodeShouldPromotePendingPeer(true, "AABB", ""));
+  EXPECT_FALSE(ShipNodeShouldPromotePendingPeer(true, nullptr, nullptr));
+}
+
+TEST(ShipNodePromotePendingTest, ComparesTheWholeFingerprint) {
+  EXPECT_FALSE(ShipNodeShouldPromotePendingPeer(true, ANNEX_A_FOR_PAR, "C74B7855"));
+  EXPECT_TRUE(ShipNodeShouldPromotePendingPeer(true, ANNEX_A_FOR_PAR, ANNEX_A_FOR_PAR));
+}
+
 TEST(ServiceDetailsFingerprintTest, HasNoFingerprintUntilOneIsSet) {
   ServiceDetails* const details = ServiceDetailsCreate("ski", "ship-id", "device-type", false);
   ASSERT_NE(details, nullptr);

@@ -84,6 +84,19 @@ struct ShipNode {
    */
   const char* remote_fingerprint;
 
+  /**
+   * @brief Certificate fingerprint the connected peer presented, NULL when none
+   *
+   * The http server publishes a peer's fingerprint only for the length of the
+   * connection callback, which is all the decision taken there needs. A
+   * shippairing request can be accepted at any point afterwards, though, and
+   * deciding whether it names the peer already connected means still having the
+   * fingerprint then. Kept for the life of the connection and discarded with it.
+   *
+   * A certificate hash is public, so holding one costs nothing in secrecy.
+   */
+  const char* connected_peer_fingerprint;
+
   /** Evaluates the shippairing requests addressed to this node, chapter 9 */
   ShipPairingObject* ship_pairing;
   bool connection_attempt_running;
@@ -133,6 +146,38 @@ static inline bool ShipNodeFingerprintMatches(const char* peer_fingerprint, cons
   }
 
   return strcmp(peer_fingerprint, trusted_fingerprint) == 0;
+}
+
+/**
+ * @brief Reports whether a connection in hand should be promoted to trusted
+ *
+ * Section 4.2 has devZ establishing a SHIP connection before it announces its
+ * request, and repeating the attempt for as long as devA does not trust it, so
+ * a node being paired is usually already holding a connection that was admitted
+ * provisionally and parked awaiting a decision. When the request is accepted,
+ * that decision has been made, and the connection in hand should not have to be
+ * abandoned and remade for it to take effect.
+ *
+ * The comparison is against the certificate the peer presented and nothing
+ * else. The SKI it arrived with says only who dialled in first, and promoting on
+ * that basis would admit them on the strength of a request naming somebody
+ * else's certificate.
+ *
+ * @param has_connection Whether a connection is currently held
+ * @param connected_peer_fingerprint Fingerprint that connection's peer presented
+ * @param trusted_fingerprint Fingerprint just registered as trusted
+ * @return true if the held connection belongs to the node that was authorised
+ */
+static inline bool ShipNodeShouldPromotePendingPeer(
+    bool has_connection,
+    const char* connected_peer_fingerprint,
+    const char* trusted_fingerprint
+) {
+  if (!has_connection) {
+    return false;
+  }
+
+  return ShipNodeFingerprintMatches(connected_peer_fingerprint, trusted_fingerprint);
 }
 
 static inline bool ShipNodeIsPeerRecognised(

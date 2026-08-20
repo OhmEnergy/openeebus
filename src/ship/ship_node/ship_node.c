@@ -174,10 +174,11 @@ void ShipNodeConstruct(
   self->cancel                = false;
   self->connection_thread     = NULL;
 
-  self->remote_ski         = NULL;
-  self->remote_ski_trusted = false;
-  self->trust_mode         = trust_mode;
-  self->remote_fingerprint = NULL;
+  self->remote_ski                 = NULL;
+  self->remote_ski_trusted         = false;
+  self->trust_mode                 = trust_mode;
+  self->remote_fingerprint         = NULL;
+  self->connected_peer_fingerprint = NULL;
 
   self->connections_table     = NULL;
   self->ship_node_reader      = ship_node_reader;
@@ -244,6 +245,9 @@ void Destruct(InfoProviderObject* self) {
 
   StringDelete((char*)sn->remote_fingerprint);
   sn->remote_fingerprint = NULL;
+
+  StringDelete((char*)sn->connected_peer_fingerprint);
+  sn->connected_peer_fingerprint = NULL;
 
   ShipPairingDelete(sn->ship_pairing);
   sn->ship_pairing = NULL;
@@ -347,6 +351,12 @@ void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_erro
     StringDelete(self->remote_ski);
     self->remote_ski = NULL;
   }
+
+  // Belongs to the connection that has just ended. Keeping it would let a
+  // shippairing request accepted afterwards match a peer that is no longer
+  // there, and approve a handshake belonging to whoever connected next.
+  StringDelete((char*)self->connected_peer_fingerprint);
+  self->connected_peer_fingerprint = NULL;
   EEBUS_MUTEX_UNLOCK(self->mutex);
   ShipConnectionDelete(sc);
   self->ship_connection = NULL;
@@ -482,7 +492,43 @@ void RegisterRemoteFingerprint(ShipNodeObject* self, const char* fingerprint) {
   EEBUS_MUTEX_LOCK(sn->mutex);
   StringDelete((char*)sn->remote_fingerprint);
   sn->remote_fingerprint = StringCopy(fingerprint);
+
+  // A peer that is already connected was judged when it connected, against a
+  // fingerprint that had not been registered yet. Section 4.2 has devZ
+  // establishing a SHIP connection before it announces its request and
+  // repeating the attempt for as long as devA does not trust it, so a node
+  // being paired is very often holding exactly such a connection: admitted
+  // provisionally under post-trust and parked in the hello PENDING phase,
+  // waiting for a decision that section 10.2 has now made.
+  //
+  // Nothing else will revisit it. The peer waits out its own patience, the
+  // connection is closed, and only the attempt after that is recognised - a
+  // minute or two of an installation looking like a failure. So the decision is
+  // applied to the connection in hand rather than only to the next one.
+  //
+  // Judged on the certificate the peer actually presented, never on the SKI it
+  // arrived with. The two say different things: the request authorises a
+  // fingerprint, while the pending SKI is merely whoever dialled in first, and
+  // approving on that basis would admit them on the strength of somebody else's
+  // request.
+  const bool promote = ShipNodeShouldPromotePendingPeer(
+      sn->ship_connection != NULL,
+      sn->connected_peer_fingerprint,
+      sn->remote_fingerprint
+  );
+
+  if (promote) {
+    // Trust first, then release the handshake: the connection thread reads the
+    // trust state to pick the "hello" phase.
+    sn->remote_ski_trusted = true;
+  }
+
   EEBUS_MUTEX_UNLOCK(sn->mutex);
+
+  if (promote) {
+    SHIP_NODE_DEBUG_PRINTF("%s(), peer already connected presented this certificate, approving\n", __func__);
+    SHIP_CONNECTION_APPROVE_PENDING_HANDSHAKE(sn->ship_connection);
+  }
 }
 
 bool SkiMatches(const char* ski_a, const char* ski_b) {
@@ -620,6 +666,13 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
   // (SHIP Pairing Service TS 1.0.0, section 10.2).
   const char* const peer_fingerprint   = HttpServerGetPeerFingerprint(sn->http_server);
   const bool recognised_by_certificate = ShipNodeFingerprintMatches(peer_fingerprint, sn->remote_fingerprint);
+
+  // Kept past this callback, which is the only moment the http server publishes
+  // it. A shippairing request naming this peer can be accepted later, and
+  // RegisterRemoteFingerprint() then has to be able to tell whether the node
+  // already connected is the one it names.
+  StringDelete((char*)sn->connected_peer_fingerprint);
+  sn->connected_peer_fingerprint = StringCopy(peer_fingerprint);
 
   bool is_ski_accepted = ShipNodeIsPeerRecognised(ski, sn->remote_ski, peer_fingerprint, sn->remote_fingerprint);
 
