@@ -57,6 +57,13 @@ struct ShipPairing {
 
   /** Counts the fifteen minutes of section 4.3.1 */
   EebusTimerObject* reactivation_timer;
+
+  /** Told when this evaluator becomes able, or unable, to accept a request */
+  OnShipPairingEnabledCallback on_enabled_cb;
+  void* enabled_ctx;
+
+  /** What was last reported through @ref on_enabled_cb */
+  bool reported_enabled;
 };
 
 #define SHIP_PAIRING(obj) ((ShipPairing*)(obj))

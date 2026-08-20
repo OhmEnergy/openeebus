@@ -414,3 +414,89 @@ TEST_F(ShipPairingTestSuite, RejectsInvalidConstructionArguments) {
 
   TlsCertificateMockDelete(cert_mock);
 }
+
+namespace {
+
+/** @brief Records what the evaluator reported about being able to accept */
+struct EnabledLog {
+  std::vector<bool> transitions;
+};
+
+void RecordEnabled(bool enabled, void* ctx) {
+  static_cast<EnabledLog*>(ctx)->transitions.push_back(enabled);
+}
+
+}  // namespace
+
+TEST_F(ShipPairingTestSuite, CannotAcceptAnythingUntilASecretIsSet) {
+  Evaluator evaluator;
+  ASSERT_NE(evaluator.Get(), nullptr);
+
+  // Nothing could be accepted, so a node has no reason to look for requests.
+  EXPECT_FALSE(SHIP_PAIRING_IS_ENABLED(evaluator.Get()));
+
+  evaluator.SetAnnexASecret();
+  EXPECT_TRUE(SHIP_PAIRING_IS_ENABLED(evaluator.Get()));
+}
+
+TEST_F(ShipPairingTestSuite, CannotAcceptAnythingWhileAlreadyPaired) {
+  Evaluator evaluator;
+  ASSERT_NE(evaluator.Get(), nullptr);
+  evaluator.SetAnnexASecret();
+
+  const EntryPtr entry = AnnexAEntry();
+  ASSERT_NE(entry, nullptr);
+  ASSERT_EQ(SHIP_PAIRING_EVALUATE(evaluator.Get(), entry.get()), kShipPairingResultAccepted);
+
+  // Section 4.2, step 3 stopped the processing of addCu-requests, so until that
+  // changes there is nothing to listen for.
+  EXPECT_FALSE(SHIP_PAIRING_IS_ENABLED(evaluator.Get()));
+
+  EebusTimerMockExpire(evaluator.Timer());
+  EXPECT_TRUE(SHIP_PAIRING_IS_ENABLED(evaluator.Get()));
+}
+
+TEST_F(ShipPairingTestSuite, ReportsOnlyChangesInWhatItCanDo) {
+  Evaluator evaluator;
+  ASSERT_NE(evaluator.Get(), nullptr);
+
+  EnabledLog log;
+  SHIP_PAIRING_SET_ENABLED_CALLBACK(evaluator.Get(), RecordEnabled, &log);
+
+  // Registering says nothing: the node knows the state it started in.
+  EXPECT_TRUE(log.transitions.empty());
+
+  evaluator.SetAnnexASecret();
+  ASSERT_EQ(log.transitions.size(), 1u);
+  EXPECT_TRUE(log.transitions[0]);
+
+  // Setting the same secret again changes nothing, so nothing is reported.
+  evaluator.SetAnnexASecret();
+  EXPECT_EQ(log.transitions.size(), 1u);
+
+  const EntryPtr entry = AnnexAEntry();
+  ASSERT_NE(entry, nullptr);
+  ASSERT_EQ(SHIP_PAIRING_EVALUATE(evaluator.Get(), entry.get()), kShipPairingResultAccepted);
+
+  ASSERT_EQ(log.transitions.size(), 2u);
+  EXPECT_FALSE(log.transitions[1]);
+
+  EebusTimerMockExpire(evaluator.Timer());
+  ASSERT_EQ(log.transitions.size(), 3u);
+  EXPECT_TRUE(log.transitions[2]);
+}
+
+TEST_F(ShipPairingTestSuite, ReportsThatItCanNoLongerAcceptWhenTheSecretIsCleared) {
+  Evaluator evaluator;
+  ASSERT_NE(evaluator.Get(), nullptr);
+  evaluator.SetAnnexASecret();
+
+  EnabledLog log;
+  SHIP_PAIRING_SET_ENABLED_CALLBACK(evaluator.Get(), RecordEnabled, &log);
+
+  SHIP_PAIRING_SET_SECRET(evaluator.Get(), nullptr, 0);
+
+  ASSERT_EQ(log.transitions.size(), 1u);
+  EXPECT_FALSE(log.transitions[0]);
+  EXPECT_FALSE(SHIP_PAIRING_IS_ENABLED(evaluator.Get()));
+}

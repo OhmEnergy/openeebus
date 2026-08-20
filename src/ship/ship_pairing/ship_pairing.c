@@ -52,6 +52,9 @@ static void GetRingBuffer(const ShipPairingObject* self, ShipPairingRingBuffer* 
 static void SetRingBuffer(ShipPairingObject* self, const ShipPairingRingBuffer* ring_buffer);
 static void SetSecret(ShipPairingObject* self, const uint8_t* secret, size_t secret_size);
 static void SetSupportedCurves(ShipPairingObject* self, uint32_t curves);
+static void SetEnabledCallback(ShipPairingObject* self, OnShipPairingEnabledCallback cb, void* ctx);
+static bool IsEnabled(const ShipPairingObject* self);
+static void ShipPairingReportEnabled(ShipPairing* self);
 
 static const ShipPairingInterface interface = {
     .destruct                = Destruct,
@@ -65,6 +68,8 @@ static const ShipPairingInterface interface = {
     .set_ring_buffer         = SetRingBuffer,
     .set_secret              = SetSecret,
     .set_supported_curves    = SetSupportedCurves,
+    .set_enabled_callback    = SetEnabledCallback,
+    .is_enabled              = IsEnabled,
 };
 
 static void ShipPairingTimeoutCallback(void* ctx);
@@ -129,6 +134,12 @@ ShipPairingObject* ShipPairingCreate(const char* own_ship_id, const TlsCertifica
 
   self->reactivation_timer = EebusTimerCreate(ShipPairingTimeoutCallback, self);
 
+  self->on_enabled_cb = NULL;
+  self->enabled_ctx   = NULL;
+  // Nothing can be accepted until a secret is provided, so this is where it
+  // starts and any later change is worth reporting.
+  self->reported_enabled = false;
+
   if ((self->own_ship_id == NULL) || (self->reactivation_timer == NULL)) {
     Destruct(SHIP_PAIRING_OBJECT(self));
     EEBUS_FREE(self);
@@ -169,6 +180,7 @@ void ShipPairingTimeoutCallback(void* ctx) {
       SHIP_PAIRING_REACTIVATION_MINUTES
   );
   self->add_cu_activated = true;
+  ShipPairingReportEnabled(self);
 }
 
 void ShipPairingRestartReactivationTimer(ShipPairing* self) {
@@ -306,8 +318,44 @@ ShipPairingResult Evaluate(ShipPairingObject* self, const ShipPairingEntry* entr
   // Section 4.2, step 3: having accepted one, stop processing further ones.
   ship_pairing->add_cu_activated = false;
   ShipPairingRestartReactivationTimer(ship_pairing);
+  ShipPairingReportEnabled(ship_pairing);
 
   return kShipPairingResultAccepted;
+}
+
+void SetEnabledCallback(ShipPairingObject* self, OnShipPairingEnabledCallback cb, void* ctx) {
+  ShipPairing* const ship_pairing = SHIP_PAIRING(self);
+
+  ship_pairing->on_enabled_cb = cb;
+  ship_pairing->enabled_ctx   = ctx;
+}
+
+bool IsEnabled(const ShipPairingObject* self) {
+  const ShipPairing* const ship_pairing = SHIP_PAIRING(self);
+
+  // Without a secret nothing can be authenticated, and with addCu-requests no
+  // longer being processed nothing would be accepted even if it were.
+  return (ship_pairing->secret_size > 0) && ship_pairing->add_cu_activated;
+}
+
+/**
+ * @brief Reports a change in whether a request could be accepted
+ *
+ * Called wherever the secret or the processing of addCu-requests changes, and
+ * reports only transitions, so that a caller can act on it by starting and
+ * stopping work rather than by counting.
+ */
+void ShipPairingReportEnabled(ShipPairing* self) {
+  const bool enabled = IsEnabled(SHIP_PAIRING_OBJECT(self));
+  if (enabled == self->reported_enabled) {
+    return;
+  }
+
+  self->reported_enabled = enabled;
+
+  if (self->on_enabled_cb != NULL) {
+    self->on_enabled_cb(enabled, self->enabled_ctx);
+  }
 }
 
 bool IsAddCuActivated(const ShipPairingObject* self) {
@@ -319,10 +367,12 @@ void ActivateAddCu(ShipPairingObject* self) {
   // (section 10.4) but a record of what has already been seen, and forgetting
   // it here would let a request that was accepted once be replayed.
   SHIP_PAIRING(self)->add_cu_activated = true;
+  ShipPairingReportEnabled(SHIP_PAIRING(self));
 }
 
 void DeactivateAddCu(ShipPairingObject* self) {
   SHIP_PAIRING(self)->add_cu_activated = false;
+  ShipPairingReportEnabled(SHIP_PAIRING(self));
 }
 
 void NotifyMessageExchange(ShipPairingObject* self) {
@@ -335,6 +385,7 @@ void NotifyMessageExchange(ShipPairingObject* self) {
   }
 
   ShipPairingRestartReactivationTimer(ship_pairing);
+  ShipPairingReportEnabled(ship_pairing);
 }
 
 bool HasTrustedPeer(const ShipPairingObject* self) {
@@ -376,6 +427,7 @@ void SetRingBuffer(ShipPairingObject* self, const ShipPairingRingBuffer* ring_bu
   // of section 4.3.1 elapse, counted from this node starting up.
   ship_pairing->add_cu_activated = !HasTrustedPeer(self);
   ShipPairingRestartReactivationTimer(ship_pairing);
+  ShipPairingReportEnabled(ship_pairing);
 }
 
 void SetSecret(ShipPairingObject* self, const uint8_t* secret, size_t secret_size) {
@@ -385,11 +437,14 @@ void SetSecret(ShipPairingObject* self, const uint8_t* secret, size_t secret_siz
   ship_pairing->secret_size = 0;
 
   if ((secret == NULL) || (secret_size == 0) || (secret_size > sizeof(ship_pairing->secret))) {
+    ShipPairingReportEnabled(ship_pairing);
     return;
   }
 
   memcpy(ship_pairing->secret, secret, secret_size);
   ship_pairing->secret_size = secret_size;
+
+  ShipPairingReportEnabled(ship_pairing);
 }
 
 void SetSupportedCurves(ShipPairingObject* self, uint32_t curves) {

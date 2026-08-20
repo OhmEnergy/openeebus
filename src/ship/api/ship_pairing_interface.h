@@ -92,6 +92,20 @@ enum ShipPairingResult {
 typedef enum ShipPairingResult ShipPairingResult;
 
 /**
+ * @brief Reports whether the evaluator can currently accept anything
+ *
+ * An evaluator that has no secret, or that has stopped processing
+ * addCu-requests because it is already paired, rejects every request it is
+ * given. Telling the node when that changes lets it stop looking for requests
+ * altogether rather than discovering and resolving announcements only to throw
+ * them away.
+ *
+ * @param enabled Whether a request could now be accepted
+ * @param ctx Context given when the callback was registered
+ */
+typedef void (*OnShipPairingEnabledCallback)(bool enabled, void* ctx);
+
+/**
  * @brief One entry of the ring buffer
  *
  * An entry is unset when its digest is empty. Only the algorithm and the digest
@@ -227,6 +241,22 @@ struct ShipPairingInterface {
    * @param curves Bitwise OR of ShipPairingCurve values
    */
   void (*set_supported_curves)(ShipPairingObject* self, uint32_t curves);
+
+  /**
+   * @brief Registers who to tell when this evaluator becomes able to accept
+   *
+   * Called whenever the answer changes, and not on registration: the node that
+   * registers it knows the state it starts in.
+   */
+  void (*set_enabled_callback)(ShipPairingObject* self, OnShipPairingEnabledCallback cb, void* ctx);
+
+  /**
+   * @brief Reports whether a request could currently be accepted
+   *
+   * True when a secret is set and addCu-requests are being processed. False
+   * means every request would be rejected, whatever it contained.
+   */
+  bool (*is_enabled)(const ShipPairingObject* self);
 };
 
 /**
@@ -301,6 +331,17 @@ struct ShipPairingObject {
  * @brief shippairing Set Supported Curves caller definition
  */
 #define SHIP_PAIRING_SET_SUPPORTED_CURVES(obj, curves) (SHIP_PAIRING_INTERFACE(obj)->set_supported_curves(obj, curves))
+
+/**
+ * @brief shippairing Set Enabled Callback caller definition
+ */
+#define SHIP_PAIRING_SET_ENABLED_CALLBACK(obj, cb, ctx) \
+  (SHIP_PAIRING_INTERFACE(obj)->set_enabled_callback(obj, cb, ctx))
+
+/**
+ * @brief shippairing Is Enabled caller definition
+ */
+#define SHIP_PAIRING_IS_ENABLED(obj) (SHIP_PAIRING_INTERFACE(obj)->is_enabled(obj))
 
 #ifdef __cplusplus
 }

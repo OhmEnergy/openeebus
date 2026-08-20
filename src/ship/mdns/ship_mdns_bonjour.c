@@ -847,9 +847,8 @@ static void MdnsRecoverSessions(Mdns* mdns, uint32_t now_seconds) {
   MdnsBrowseServices(mdns);
   recovered = recovered && (mdns->dns_service_browser_ref != NULL);
 
-  // The reset tore the shippairing browse down with the rest, so it is opened
-  // again here. A backend without it is not considered unrecovered.
-  MdnsPairingBrowseServices(mdns);
+  // The reset tore the shippairing browse down with the rest. The loop opens it
+  // again if something is still waiting for what it finds.
 
   mdns->needs_recovery             = !recovered;
   mdns->next_recovery_time_seconds = now_seconds + kMdnsRecoveryDelaySeconds;
@@ -988,6 +987,12 @@ void MdnsPairingBrowseServicesCallback(
     return;
   }
 
+  // Stopped while this was in flight: resolving it would be work for an answer
+  // nobody is waiting for.
+  if (mdns->on_pairing_entries_found_cb == NULL) {
+    return;
+  }
+
   ShipPairingEntry* const entry = ShipPairingEntryCreate(name, domain, iface);
   if (entry == NULL) {
     return;
@@ -1100,16 +1105,26 @@ static void* MdnsBrowserLoop(void* parameters) {
     mdns->needs_recovery = true;
   }
 
-  // Browsed from the same thread as SHIP itself, so that both share one set of
-  // service refs and one select(). Neither specification asks for discovery to
-  // be prompt, and a second browsing thread would have to be kept in step with
-  // this one for no gain.
-  MdnsPairingBrowseServices(mdns);
-
   while (!mdns->cancel) {
     const uint32_t now_seconds = MdnsGetCurrentTimeSeconds();
 
     MdnsRecoverSessions(mdns, now_seconds);
+
+    // Browsed from the same thread as SHIP itself, so that both share one set
+    // of service refs and one select(). Neither specification asks for
+    // discovery to be prompt, and a second browsing thread would have to be
+    // kept in step with this one for no gain.
+    //
+    // Opened only while something is waiting for what it finds, so a node that
+    // could not accept a request does not ask for any.
+    if ((mdns->on_pairing_entries_found_cb != NULL) && (mdns->dns_service_pairing_browser_ref == NULL)) {
+      MdnsPairingBrowseServices(mdns);
+    } else if ((mdns->on_pairing_entries_found_cb == NULL) && (mdns->dns_service_pairing_browser_ref != NULL)) {
+      DNSServiceRefDeallocate(mdns->dns_service_pairing_browser_ref);
+      mdns->dns_service_pairing_browser_ref = NULL;
+      VectorFreeElements(mdns->pairing_found_entries);
+      VectorClear(mdns->pairing_found_entries);
+    }
 
     fd_set readfds;
     FD_ZERO(&readfds);

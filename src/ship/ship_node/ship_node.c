@@ -81,6 +81,7 @@ static void RegisterRemoteFingerprint(ShipNodeObject* self, const char* fingerpr
 static ShipPairingObject* GetShipPairing(ShipNodeObject* self);
 static EebusError AnnounceShipPairingRequest(ShipNodeObject* self, const ShipPairingEntry* entry);
 static void ShipNodeOnPairingEntriesFoundCallback(Vector* found_entries, void* ctx);
+static void ShipNodeOnPairingEnabledCallback(bool enabled, void* ctx);
 static void UnregisterRemoteSki(ShipNodeObject* self, const char* ski);
 static void CancelPairingWithSki(ShipNodeObject* self, const char* ski);
 static void ShipNodeUnregisterSki(ShipNodeObject* self, const char* ski);
@@ -176,7 +177,10 @@ void ShipNodeConstruct(
 
   // Built from this node's own identity, which the request it evaluates has to
   // name to be addressed here. Created after the certificate is in place.
-  self->ship_pairing          = ShipPairingCreate(local_service_details->ship_id, tsl_certificate);
+  self->ship_pairing = ShipPairingCreate(local_service_details->ship_id, tsl_certificate);
+  if (self->ship_pairing != NULL) {
+    SHIP_PAIRING_SET_ENABLED_CALLBACK(self->ship_pairing, ShipNodeOnPairingEnabledCallback, self);
+  }
   self->local_service_details = local_service_details;
 
   self->http_server = HttpServerCreate(port, tsl_certificate, ShipNodeOnWebsocketServerConnectionCallback, self);
@@ -383,6 +387,28 @@ EebusError AnnounceShipPairingRequest(ShipNodeObject* self, const ShipPairingEnt
   }
 
   return ShipMdnsRegisterPairingService(sn->mdns, entry);
+}
+
+/**
+ * @brief Starts or stops looking for shippairing requests
+ *
+ * A node that has no secret, or that is already paired and so is no longer
+ * processing addCu-requests, would reject every request it was given. Rather
+ * than discover and resolve announcements in order to throw them away, it stops
+ * asking for them, and starts again if that changes.
+ */
+void ShipNodeOnPairingEnabledCallback(bool enabled, void* ctx) {
+  ShipNode* const sn = (ShipNode*)ctx;
+
+  if (sn->mdns == NULL) {
+    return;
+  }
+
+  if (enabled) {
+    ShipMdnsStartPairingBrowse(sn->mdns, ShipNodeOnPairingEntriesFoundCallback, sn);
+  } else {
+    ShipMdnsStopPairingBrowse(sn->mdns);
+  }
 }
 
 /**
@@ -623,10 +649,12 @@ void Start(ShipNodeObject* self) {
     HTTP_SERVER_START(sn->http_server);
   }
 
-  // A node with no secret set evaluates nothing, so browsing costs one query
-  // per cycle and is left on rather than made conditional on configuration that
-  // usually arrives later than this.
-  ShipMdnsStartPairingBrowse(sn->mdns, ShipNodeOnPairingEntriesFoundCallback, sn);
+  // Looking for shippairing requests only while one could be accepted. The
+  // evaluator reports when that changes, but the secret may have been set
+  // before the node was started, so the current answer is applied here too.
+  if ((sn->ship_pairing != NULL) && SHIP_PAIRING_IS_ENABLED(sn->ship_pairing)) {
+    ShipMdnsStartPairingBrowse(sn->mdns, ShipNodeOnPairingEntriesFoundCallback, sn);
+  }
 
   SHIP_MDNS_START(sn->mdns);
 
