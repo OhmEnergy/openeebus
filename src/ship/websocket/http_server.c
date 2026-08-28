@@ -49,15 +49,6 @@
 #define HTTP_SERVER_DEBUG_PRINTF(fmt, ...)
 #endif  // HTTP_SERVER_DEBUG
 
-/**
- * @brief Workaround for mbedtls verify client cert post-handshake
- * until https://github.com/warmcat/libwebsockets/pull/3460 is merged
- * and included into release
- */
-#ifndef LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE
-#define LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE 0
-#endif  // LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE
-
 typedef struct HttpServer HttpServer;
 
 struct HttpServer {
@@ -191,10 +182,16 @@ struct lws_context* HttpServerContextCreate(HttpServer* self) {
       .gid       = (gid_t)-1,
       .uid       = (uid_t)-1,
 
+      /*
+       * REQUIRE_VALID_OPENSSL_CLIENT_CERT without PEER_CERT_NOT_REQUIRED asks
+       * for an optional client certificate: the peer is asked for one and it
+       * is kept, and a chain leading to no known CA does not fail the
+       * handshake. A node admits a peer by that certificate's fingerprint once
+       * the connection is up (SHIP 10.2), so the CA verdict does not decide.
+       */
       .options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT | LWS_SERVER_OPTION_SSL_ECDH
-                 | LWS_SERVER_OPTION_PEER_CERT_NOT_REQUIRED | LWS_SERVER_OPTION_H2_JUST_FIX_WINDOW_UPDATE_OVERFLOW
-                 | LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT
-                 | LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE,
+                 | LWS_SERVER_OPTION_H2_JUST_FIX_WINDOW_UPDATE_OVERFLOW
+                 | LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT,
 
       .ecdh_curve = "prime256v1",
       .ssl_cipher_list
