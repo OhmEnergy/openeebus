@@ -115,6 +115,7 @@ static int HttpServerOnClientConnect(HttpServer* self, struct lws* wsi);
 static int HttpServerOnReceive(HttpServer* self, struct lws* wsi, void* in, size_t len);
 static int HttpServerOnWriteable(HttpServer* self, struct lws* wsi);
 static int HttpServerOnConnectionClose(HttpServer* self, struct lws* wsi);
+static int HttpServerOnSslContextCreated(HttpServer* self, void* ssl_ctx);
 static int
 HttpServerServiceCallback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
 
@@ -192,7 +193,7 @@ void HttpServerStaggerCallback(lws_sorted_usec_list_t* sul) {
 }
 
 struct lws_context* HttpServerContextCreate(HttpServer* self) {
-  const struct lws_context_creation_info lws_ctx_creation_info = (struct lws_context_creation_info){
+  struct lws_context_creation_info lws_ctx_creation_info = (struct lws_context_creation_info){
       .port      = self->port,
       .protocols = self->protocols,
       .gid       = (gid_t)-1,
@@ -215,13 +216,23 @@ struct lws_context* HttpServerContextCreate(HttpServer* self) {
         "ECDHE-ECDSA-AES128-CCM8:"
         "ECDHE-ECDSA-AES128-SHA256",
 
-      .server_ssl_cert_mem            = TLS_CERTIFICATE_GET_CERTIFICATE(self->tls_cert),
-      .server_ssl_cert_mem_len        = (unsigned int)TLS_CERTIFICATE_GET_CERTIFICATE_SIZE(self->tls_cert),
-      .server_ssl_private_key_mem     = TLS_CERTIFICATE_GET_PRIVATE_KEY(self->tls_cert),
-      .server_ssl_private_key_mem_len = (unsigned int)TLS_CERTIFICATE_GET_PRIVATE_KEY_SIZE(self->tls_cert),
-
       .user = self,
   };
+
+  if (TLS_CERTIFICATE_HAS_SSL_CTX_CONFIG(self->tls_cert)) {
+    /*
+     * The certificate configures itself, so none is passed here: lws is asked
+     * for a bare TLS context, which it reports at
+     * LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS.
+     */
+    lws_ctx_creation_info.options |= LWS_SERVER_OPTION_CREATE_VHOST_SSL_CTX;
+  } else {
+    lws_ctx_creation_info.server_ssl_cert_mem     = TLS_CERTIFICATE_GET_CERTIFICATE(self->tls_cert);
+    lws_ctx_creation_info.server_ssl_cert_mem_len = (unsigned int)TLS_CERTIFICATE_GET_CERTIFICATE_SIZE(self->tls_cert);
+    lws_ctx_creation_info.server_ssl_private_key_mem = TLS_CERTIFICATE_GET_PRIVATE_KEY(self->tls_cert);
+    lws_ctx_creation_info.server_ssl_private_key_mem_len
+        = (unsigned int)TLS_CERTIFICATE_GET_PRIVATE_KEY_SIZE(self->tls_cert);
+  }
 
   if (WEBSOCKET_DEBUG == 2) {
     int logs = LLL_USER | LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_DEBUG;
@@ -397,14 +408,25 @@ int HttpServerOnConnectionClose(HttpServer* self, struct lws* wsi) {
   return 0;
 }
 
-int HttpServerServiceCallback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
-  UNUSED(user);
+int HttpServerOnSslContextCreated(HttpServer* self, void* ssl_ctx) {
+  if (!TLS_CERTIFICATE_HAS_SSL_CTX_CONFIG(self->tls_cert)) {
+    return 0;
+  }
 
+  return TLS_CERTIFICATE_CONFIGURE_SSL_CTX(self->tls_cert, ssl_ctx);
+}
+
+int HttpServerServiceCallback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
   HTTP_SERVER_DEBUG_PRINTF("%s(), reason = %s\n", __func__, WebsocketLwsReasonToString(reason));
   HttpServer* const srv = lws_context_user(lws_get_context(wsi));
   int ret               = 0;
 
   switch (reason) {
+    /* The new vhost TLS context arrives in the user parameter. */
+    case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS:
+      ret = HttpServerOnSslContextCreated(srv, user);
+      break;
+
     case LWS_CALLBACK_ESTABLISHED: ret = HttpServerOnClientConnect(srv, wsi); break;
 
     case LWS_CALLBACK_RECEIVE: ret = HttpServerOnReceive(srv, wsi, in, len); break;
