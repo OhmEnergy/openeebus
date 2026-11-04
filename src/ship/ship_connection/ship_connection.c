@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 
 #include "src/common/array_util.h"
@@ -248,6 +249,12 @@ EebusError Start(ShipConnectionObject* self, WebsocketCreatorObject* websocket_c
 void Stop(ShipConnectionObject* self) {
   ShipConnection* const sc = SHIP_CONNECTION(self);
 
+  // SHIP 13.4.7: a session in data exchange is ended with an announcement, so the
+  // peer learns the connection was removed rather than seeing the socket drop
+  if (GetState(self, NULL) == kDataExchange) {
+    SHIP_CONNECTION_CLOSE_CONNECTION(self, true, 0, kShipCloseReasonRemovedConnection);
+  }
+
   sc->cancel = true;
 
   ShipConnectionQueueMessage queue_msg = {.type = kShipConnectionQueueMsgTypeCancel};
@@ -359,17 +366,22 @@ void CloseConnection(ShipConnectionObject* self, bool safe, int32_t code, const 
 
   // this may not be used for Connection Data Exchange is entered!
   if (safe && state == kDataExchange) {
-    // SHIP 13.4.7: Connection Termination Announce
-    const ConnectionClose sme_close = {
-        .phase  = kConnectionClosePhaseTypeAnnounce,
-        .reason = reason,
+    // SHIP 13.4.7: Connection Termination Announce. The reason is an enumeration on
+    // the wire, so free-text reasons from internal callers are reported as unspecific.
+    const bool removed = (reason != NULL) && (strcmp(reason, kShipCloseReasonRemovedConnection) == 0);
+
+    ConnectionClose sme_close = {
+        .phase        = kConnectionClosePhaseTypeAnnounce,
+        .max_time_val = kShipCloseMaxTimeMs,
+        .reason       = removed ? kShipCloseReasonRemovedConnection : kShipCloseReasonUnspecific,
     };
+    sme_close.max_time = &sme_close.max_time_val;
 
     ShipConnectionSerializeAndSendMessage(sc, &sme_close, kSmeClose);
     // TODO: Instead of sleeping unconditionally, dequeue messages here and wait
     // for kConnectionClosePhaseTypeConfirm (via DataExchangeHandleClose) with a
-    // 500ms timeout, closing immediately on Confirm or on timeout expiry.
-    EebusThreadUsleep(500000);  // Wait 0.5s for the message to be sent
+    // maxTime timeout, closing immediately on Confirm or on timeout expiry.
+    EebusThreadUsleep(kShipCloseMaxTimeMs * 1000);  // Announced maxTime for the peer's confirm
     WEBSOCKET_CLOSE(sc->websocket, 4001, "close");
   } else {
     WEBSOCKET_CLOSE(sc->websocket, (code != 0) ? code : 4001, reason);
@@ -679,7 +691,13 @@ void SmeHelloStateCommonUpdateHelloMessageSendProcedure(ShipConnection* self, co
     remaining_time = EEBUS_TIMER_GET_REMAINING_TIME(self->wait_for_ready_timer);
   }
 
-  if (SmeHelloStateSendHelloMsg(self, msg->phase, remaining_time, false) != kEebusErrorOk) {
+  (void)msg;
+
+  // SHIP 13.4.4.1.3: the update announces the local phase, not the peer's one
+  const ConnectionHelloPhase local_phase
+      = (self->sme_state == kSmeHelloStateReadyListen) ? kConnectionHelloPhaseReady : kConnectionHelloPhasePending;
+
+  if (SmeHelloStateSendHelloMsg(self, local_phase, remaining_time, false) != kEebusErrorOk) {
     ShipConnectionSetSmeState(self, kSmeHelloStateAbort);
   }
 }

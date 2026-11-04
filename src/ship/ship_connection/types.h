@@ -40,7 +40,12 @@ enum {
   tHelloProlongThrInc     = SECONDS(30),
   tHelloProlongWaitingGap = SECONDS(15),
   tHelloProlongMin        = SECONDS(1),
+  kShipCloseMaxTimeMs     = 500,  // SHIP 13.4.7: maxTime announced for the peer's close confirm
 };
+
+// SHIP 13.4.7: connectionClose.reason values
+#define kShipCloseReasonUnspecific        "unspecific"
+#define kShipCloseReasonRemovedConnection "removedConnection"
 
 #ifdef __cplusplus
 }

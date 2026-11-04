@@ -330,7 +330,7 @@ void UpdateDevice(DeviceRemoteObject* self, const NetworkManagementDeviceDescrip
   }
 
   if (description->device_type != NULL) {
-    Int32Delete((int32_t*)device->feature_set);
+    Int32Delete((int32_t*)device->type);
     device->type = Int32Create(*description->device_type);
   }
 

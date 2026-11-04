@@ -60,6 +60,9 @@ EebusError WebsocketConstruct(Websocket* self, WebsocketCallback cb, void* ctx) 
   self->is_closed   = false;
   self->close_error = 0;
 
+  self->close_pending = false;
+  self->close_done    = false;
+
   self->wr_queue = NULL;
   self->wr_mutex = NULL;
 
@@ -182,8 +185,9 @@ int32_t WebsocketGetCloseError(const WebsocketObject* self) {
 void WebsocketScheduleWrite(WebsocketObject* self) {
   Websocket* const ws = WEBSOCKET(self);
 
-  if (!EEBUS_QUEUE_IS_EMPTY(ws->wr_queue)) {
-    lws_callback_on_writable(ws->wsi);
+  struct lws* const wsi = ws->wsi;
+  if ((wsi != NULL) && (ws->close_pending || !EEBUS_QUEUE_IS_EMPTY(ws->wr_queue))) {
+    lws_callback_on_writable(wsi);
   }
 }
 
@@ -210,6 +214,13 @@ int WebsocketOnWritable(WebsocketObject* self) {
   struct lws* const wsi = ws->wsi;
   if (wsi == NULL) {
     return 0;
+  }
+
+  if (ws->close_pending && EEBUS_QUEUE_IS_EMPTY(ws->wr_queue)) {
+    // Everything queued before the close has been written: close the socket
+    const int32_t code = (ws->close_error != 0) ? ws->close_error : LWS_CLOSE_STATUS_NORMAL;
+    lws_close_reason(wsi, (enum lws_close_status)code, NULL, 0);
+    return -1;
   }
 
   WriteMessage wr_msg = {0};

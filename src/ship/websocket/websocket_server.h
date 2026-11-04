@@ -36,6 +36,14 @@ WebsocketObject* WebsocketServerOpen(HttpServerObject* srv, struct lws* wsi, Web
 
 void HttpServerUnbindWsi(HttpServerObject* self, struct lws* wsi);
 
+/**
+ * @brief Called on the LWS thread once the connection behind a server websocket has closed
+ *
+ * For a local close this is the last access to the websocket: its owner may free it
+ * as soon as this returns. A close by the peer is reported to the websocket user.
+ */
+void WebsocketServerOnClosed(WebsocketObject* self);
+
 #ifdef __cplusplus
 }
 #endif  // __cplusplus

@@ -171,15 +171,18 @@ void CmiStateServerEvaluate(ShipConnection* self) {
   MessageBuffer buf = {0};
   MessageBufferInitWithDeallocator(&buf, (uint8_t*)kShipInitMessage, ARRAY_SIZE(kShipInitMessage), NULL);
 
-  if (!ShipConnectionEvaluateInitMsg(&self->msg)) {
-    MessageBufferRelease(&self->msg);
-    ShipConnectionCloseWithError(self, "Invalid init message received");
-    return;
-  }
-
+  // SHIP 13.4.3: the server answers with its own CMI before evaluating the
+  // client's, so a peer that sent an invalid one still sees a valid reply
+  // before the connection is closed
   if (ShipConnectionSend(self, &buf) != kEebusErrorOk) {
     MessageBufferRelease(&self->msg);
     ShipConnectionCloseWithError(self, "Server CMI message send failed");
+    return;
+  }
+
+  if (!ShipConnectionEvaluateInitMsg(&self->msg)) {
+    MessageBufferRelease(&self->msg);
+    ShipConnectionCloseWithError(self, "Invalid init message received");
     return;
   }
 
@@ -223,8 +226,10 @@ bool SmeProtHandshakeStateAgreeOnProtocolVersion(
 }
 
 void SmeProtHandshakeStateServerListenProposal(ShipConnection* self) {
-  if (ShipConnectionReceive(self, &self->msg, cmiTimeout) != kEebusErrorOk) {
-    SmeProtHandshakeStateAbort(self, kMessageProtocolHandshakeErrorTypeUnexpectedMessage);
+  const EebusError rx_err = ShipConnectionReceive(self, &self->msg, cmiTimeout);
+  if (rx_err != kEebusErrorOk) {
+    SmeProtHandshakeStateAbort(self, (rx_err == kEebusErrorTime) ? kMessageProtocolHandshakeErrorTypeTimeout
+                                                                 : kMessageProtocolHandshakeErrorTypeUnexpectedMessage);
     return;
   }
 
@@ -272,8 +277,10 @@ void SmeProtHandshakeStateServerListenProposal(ShipConnection* self) {
 }
 
 void SmeProtHandshakeStateServerListenConfirm(ShipConnection* self) {
-  if (ShipConnectionReceive(self, &self->msg, cmiTimeout) != kEebusErrorOk) {
-    SmeProtHandshakeStateAbort(self, kMessageProtocolHandshakeErrorTypeUnexpectedMessage);
+  const EebusError rx_err = ShipConnectionReceive(self, &self->msg, cmiTimeout);
+  if (rx_err != kEebusErrorOk) {
+    SmeProtHandshakeStateAbort(self, (rx_err == kEebusErrorTime) ? kMessageProtocolHandshakeErrorTypeTimeout
+                                                                 : kMessageProtocolHandshakeErrorTypeUnexpectedMessage);
     return;
   }
 

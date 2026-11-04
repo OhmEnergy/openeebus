@@ -35,6 +35,7 @@
 #include "src/ship/api/websocket_creator_interface.h"
 #include "src/ship/websocket/websocket_creator.h"
 #include "src/ship/websocket/websocket_debug.h"
+#include "src/ship/websocket/websocket_server.h"
 #include "src/ship/websocket/websocket_internal.h"
 #include "src/ship/websocket/websocket_server_creator.h"
 
@@ -223,9 +224,8 @@ void HttpServerStaggerCallback(lws_sorted_usec_list_t* sul) {
   EEBUS_MUTEX_LOCK(srv->mutex);
   for (size_t i = 0; i < VectorGetSize(&srv->wsi_ws_entries); ++i) {
     const WsiWsEntry* const entry = (WsiWsEntry*)VectorGetElement(&srv->wsi_ws_entries, i);
-    if (!WEBSOCKET_IS_CLOSED(entry->ws)) {
-      WEBSOCKET_SCHEDULE_WRITE(entry->ws);
-    }
+    // Also driven while closed: a local close stays bound until its frames are flushed
+    WEBSOCKET_SCHEDULE_WRITE(entry->ws);
   }
   EEBUS_MUTEX_UNLOCK(srv->mutex);
 
@@ -448,8 +448,8 @@ int HttpServerOnConnectionClose(HttpServer* self, struct lws* wsi) {
     return -1;
   }
 
-  WEBSOCKET_CLOSE(ws, 0, "");
-  WebsocketOnClose(ws);
+  // ws may be freed by its owner as soon as this returns for a local close
+  WebsocketServerOnClosed(ws);
   lws_cancel_service(self->lws_ctx);
   return 0;
 }

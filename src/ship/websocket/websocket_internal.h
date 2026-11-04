@@ -69,6 +69,11 @@ struct Websocket {
   bool is_closed;
   int32_t close_error;
 
+  /** A local close is waiting for the queued frames to be written */
+  bool close_pending;
+  /** Set by the LWS thread as its last access once a pending close completed */
+  volatile bool close_done;
+
   EebusQueueObject* wr_queue;
   EebusMutexObject* wr_mutex;
 
