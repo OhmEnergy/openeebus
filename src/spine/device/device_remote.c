@@ -369,11 +369,10 @@ FeatureRemoteObject* FeatureRemoteCreateWithInfo(
 
   const uint32_t feature_id = *feature_description->feature_address->feature;
 
-  if (feature_description->feature_type == NULL) {
-    return NULL;
-  }
-
-  const FeatureTypeType feature_type = *feature_description->feature_type;
+  // A feature type this version does not know is parsed as absent; keep the feature as Generic so it stays
+  // addressable
+  const FeatureTypeType feature_type
+      = (feature_description->feature_type != NULL) ? *feature_description->feature_type : kFeatureTypeTypeGeneric;
 
   if (feature_description->role == NULL) {
     return NULL;
