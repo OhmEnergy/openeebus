@@ -64,6 +64,7 @@ static void AbortPendingHandshake(ShipConnectionObject* self);
 static SmeState GetState(ShipConnectionObject* self, EebusError* err);
 static uint32_t GetPendingWaitingMs(ShipConnectionObject* self);
 static void ShipConnectionTimeoutCallback(void* timer_data);
+static void ShipConnectionSpineInitialTimeoutCallback(void* ctx);
 
 static const ShipConnectionInterface ship_connection_methods = {
     .data_writer_interface =
@@ -110,6 +111,8 @@ void ShipConnectionConstruct(
   self->wait_for_ready_timer             = EebusTimerCreate(ShipConnectionTimeoutCallback, self);
   self->send_prolongation_request_timer  = EebusTimerCreate(ShipConnectionTimeoutCallback, self);
   self->prolongation_request_reply_timer = EebusTimerCreate(ShipConnectionTimeoutCallback, self);
+  self->spine_initial_timer              = EebusTimerCreate(ShipConnectionSpineInitialTimeoutCallback, self);
+  self->spine_data_received              = false;
 
   self->last_received_waiting_value = 0;
   self->trust_decision              = kShipConnectionTrustDecisionNone;
@@ -178,6 +181,9 @@ void Destruct(DataWriterObject* self) {
 
   EebusTimerDelete(sc->prolongation_request_reply_timer);
   sc->prolongation_request_reply_timer = NULL;
+
+  EebusTimerDelete(sc->spine_initial_timer);
+  sc->spine_initial_timer = NULL;
 
   EebusQueueDelete(sc->msg_queue);
   sc->msg_queue = NULL;
@@ -357,6 +363,7 @@ void CloseConnection(ShipConnectionObject* self, bool safe, int32_t code, const 
 
   EEBUS_TIMER_STOP(sc->wait_for_ready_timer);
   EEBUS_TIMER_STOP(sc->prolongation_request_reply_timer);
+  EEBUS_TIMER_STOP(sc->spine_initial_timer);
   EEBUS_TIMER_STOP(sc->send_prolongation_request_timer);
 
   // handshake is completed if approved or aborted
@@ -462,6 +469,12 @@ void ShipConnectionWebsocketCallback(WebsocketCallbackType type, const void* in,
 void ShipConnectionTimeoutCallback(void* ctx) {
   ShipConnection* const sc             = (ShipConnection*)ctx;
   ShipConnectionQueueMessage queue_msg = {.type = kShipConnectionQueueMsgTypeTimeout};
+  EEBUS_QUEUE_SEND(sc->msg_queue, &queue_msg, kTimeoutInfinite);
+}
+
+void ShipConnectionSpineInitialTimeoutCallback(void* ctx) {
+  ShipConnection* const sc             = (ShipConnection*)ctx;
+  ShipConnectionQueueMessage queue_msg = {.type = kShipConnectionQueueMsgTypeSpineInitialTimeout};
   EEBUS_QUEUE_SEND(sc->msg_queue, &queue_msg, kTimeoutInfinite);
 }
 
@@ -1228,6 +1241,9 @@ void SmeStateApproved(ShipConnection* self) {
   self->data_reader
       = INFO_PROVIDER_SETUP_REMOTE_DEVICE(self->info_provider, self->remote_ski, DATA_WRITER_OBJECT(self));
   EEBUS_TIMER_STOP(self->wait_for_ready_timer);
+  if (!self->spine_data_received) {
+    EEBUS_TIMER_START(self->spine_initial_timer, tSpineInitialTimeout, false);
+  }
   ShipConnectionSetSmeState(self, kDataExchange);
 }
 
@@ -1252,6 +1268,7 @@ EebusError DataExchangeHandleClose(ShipConnection* self, const ConnectionClose* 
   EEBUS_TIMER_STOP(self->wait_for_ready_timer);
   EEBUS_TIMER_STOP(self->send_prolongation_request_timer);
   EEBUS_TIMER_STOP(self->prolongation_request_reply_timer);
+  EEBUS_TIMER_STOP(self->spine_initial_timer);
   self->cancel        = true;
   self->shutdown_once = true;
   INFO_PROVIDER_HANDLE_CONNECTION_CLOSED(self->info_provider, SHIP_CONNECTION_OBJECT(self), true);
@@ -1272,6 +1289,10 @@ EebusError DataExchangeHandleReceive(ShipConnection* self, const MessageBuffer* 
     Data* const data = (Data*)SHIP_MESSAGE_DESERIALIZE_GET_VALUE(deserialize);
 
     if (data != NULL) {
+      if (!self->spine_data_received) {
+        self->spine_data_received = true;
+        EEBUS_TIMER_STOP(self->spine_initial_timer);
+      }
       // Pass the payload to the SPINE read handler
       SHIP_CONNECTION_DEBUG_PRINTF("Recv:    %s\n", (const char*)data->payload.data);
       DATA_READER_HANDLE_MESSAGE(self->data_reader, &data->payload);
@@ -1339,6 +1360,14 @@ EebusError DataExchangeHandle(ShipConnection* self) {
   } else if (queue_msg.type == kShipConnectionQueueMsgTypeTimeout) {
     SHIP_CONNECTION_DEBUG_PRINTF("%s(), timed out\n", __func__);
     return kEebusErrorCommunication;
+  } else if (queue_msg.type == kShipConnectionQueueMsgTypeSpineInitialTimeout) {
+    if (self->spine_data_received) {
+      return kEebusErrorOk;
+    }
+
+    SHIP_CONNECTION_DEBUG_PRINTF("%s(), no SPINE data from peer, closing\n", __func__);
+    SHIP_CONNECTION_CLOSE_CONNECTION(self, true, 0, kShipCloseReasonUnspecific);
+    return kEebusErrorOk;
   } else if (queue_msg.type == kShipConnectionQueueMsgTypeWebsocketClose) {
     SHIP_CONNECTION_CLOSE_CONNECTION(self, true, 0, NULL);
     return kEebusErrorCommunicationEnd;

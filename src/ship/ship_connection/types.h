@@ -41,6 +41,7 @@ enum {
   tHelloProlongWaitingGap = SECONDS(15),
   tHelloProlongMin        = SECONDS(1),
   kShipCloseMaxTimeMs     = 500,  // SHIP 13.4.7: maxTime announced for the peer's close confirm
+  tSpineInitialTimeout    = SECONDS(30),  // Close if the peer sends no SPINE data after data exchange starts
 };
 
 // SHIP 13.4.7: connectionClose.reason values

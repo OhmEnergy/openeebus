@@ -55,6 +55,7 @@ enum ShipConnectionQueueMsgType {
   kShipConnectionQueueMsgTypeCancel,
   kShipConnectionQueueMsgTypeTrustGranted,
   kShipConnectionQueueMsgTypeTrustDenied,
+  kShipConnectionQueueMsgTypeSpineInitialTimeout,
 };
 
 typedef enum ShipConnectionQueueMsgType ShipConnectionQueueMsgType;
@@ -99,6 +100,10 @@ typedef struct {
   EebusTimerObject* wait_for_ready_timer;
   EebusTimerObject* send_prolongation_request_timer;
   EebusTimerObject* prolongation_request_reply_timer;
+  /** Runs from data exchange entry until the first SPINE message from the peer */
+  EebusTimerObject* spine_initial_timer;
+  /** Set on the first SPINE message from the peer; the initial timeout is then void */
+  bool spine_data_received;
   uint32_t last_received_waiting_value;
   /** Only ever set while sme_state is kSmeHelloStatePendingListen */
   ShipConnectionTrustDecision trust_decision;
