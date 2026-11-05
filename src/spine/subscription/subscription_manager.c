@@ -127,8 +127,9 @@ EebusError AddSubscription(
     return kEebusErrorNoChange;
   }
 
+  // Repeating an existing subscription is accepted without adding it twice
   if (FeatureLinkContainerFind(&sm->subscription_entries, data->server_address, data->client_address) != NULL) {
-    return kEebusErrorNoChange;
+    return kEebusErrorOk;
   }
 
   FeatureLinkContainerAdd(&sm->subscription_entries, GetNextSubscriptionId(sm), server_feature, client_feature);
