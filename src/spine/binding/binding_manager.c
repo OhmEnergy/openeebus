@@ -107,6 +107,11 @@ EebusError AddBinding(
     return kEebusErrorNoChange;
   }
 
+  // NodeManagement never takes part in a binding
+  if (FEATURE_GET_TYPE(FEATURE_OBJECT(server_feature)) == kFeatureTypeTypeNodeManagement) {
+    return kEebusErrorNoChange;
+  }
+
   if (data->server_feature_type != NULL) {
     if (!FeatureParametersMatch(FEATURE(server_feature), kRoleTypeServer, *data->server_feature_type)) {
       return kEebusErrorNoChange;
