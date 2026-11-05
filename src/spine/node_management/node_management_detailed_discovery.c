@@ -286,11 +286,91 @@ EebusError ProcessReplyDetailedDiscoveryData(NodeManagement* self, const Message
   return kEebusErrorOk;
 }
 
+static bool IsNewRemoteEntity(
+    DeviceRemoteObject* dr,
+    const NodeManagementDetailedDiscoveryEntityInformationType* entity_info
+) {
+  if ((entity_info == NULL) || (entity_info->description == NULL)) {
+    return false;
+  }
+
+  const NetworkManagementEntityDescriptionDataType* const description = entity_info->description;
+  if ((description->entity_address == NULL) || (description->entity_type == NULL)) {
+    return false;
+  }
+
+  if ((description->last_state_change != NULL)
+      && (*description->last_state_change == kNetworkManagementStateChangeTypeRemoved)) {
+    return false;
+  }
+
+  const EntityAddressType* const entity_addr = description->entity_address;
+  return DEVICE_REMOTE_GET_ENTITY(dr, entity_addr->entity, entity_addr->entity_size) == NULL;
+}
+
+// Adds the entities the notification announces that are not known yet. Known entities are left as they are:
+// rebuilding their features would invalidate the bindings and subscriptions that reference them.
 EebusError ProcessNotifyDetailedDiscoveryData(NodeManagement* self, const Message* msg) {
-  UNUSED(self);
-  UNUSED(msg);
-  // TODO: Implement method
-  return kEebusErrorNotImplemented;
+  DeviceRemoteObject* const dr = msg->device_remote;
+  EventsManagerObject* const events_manager
+      = DEVICE_LOCAL_GET_EVENTS_MANAGER(FEATURE_LOCAL_GET_DEVICE(FEATURE_LOCAL_OBJECT(self)));
+
+  const NodeManagementDetailedDiscoveryDataType* const discovery_data
+      = (const NodeManagementDetailedDiscoveryDataType*)msg->cmd->data_choice;
+
+  if ((discovery_data->entity_information == NULL) || (discovery_data->entity_information_size == 0)) {
+    return kEebusErrorOk;
+  }
+
+  const NodeManagementDetailedDiscoveryEntityInformationType** const new_entity_info
+      = (const NodeManagementDetailedDiscoveryEntityInformationType**)EEBUS_MALLOC(
+          sizeof(new_entity_info[0]) * discovery_data->entity_information_size
+      );
+  if (new_entity_info == NULL) {
+    return kEebusErrorMemoryAllocate;
+  }
+
+  size_t new_entity_info_size = 0;
+  for (size_t i = 0; i < discovery_data->entity_information_size; ++i) {
+    if (IsNewRemoteEntity(dr, discovery_data->entity_information[i])) {
+      new_entity_info[new_entity_info_size++] = discovery_data->entity_information[i];
+    }
+  }
+
+  if (new_entity_info_size == 0) {
+    EEBUS_FREE((void*)new_entity_info);
+    return kEebusErrorOk;
+  }
+
+  NodeManagementDetailedDiscoveryDataType new_data = *discovery_data;
+  new_data.entity_information      = new_entity_info;
+  new_data.entity_information_size = new_entity_info_size;
+
+  const Vector* const entities = DEVICE_REMOTE_ADD_ENTITY_AND_FEATURES(dr, false, &new_data);
+  EEBUS_FREE((void*)new_entity_info);
+  if (entities == NULL) {
+    return kEebusErrorMemoryAllocate;
+  }
+
+  for (size_t i = 0; i < VectorGetSize(entities); ++i) {
+    EntityRemoteObject* const entity = VectorGetElement(entities, i);
+
+    const EventPayload payload = {
+        .ski           = DEVICE_REMOTE_GET_SKI(dr),
+        .event_type    = kEventTypeEntityChange,
+        .change_type   = kElementChangeAdd,
+        .device        = dr,
+        .entity        = entity,
+        .function_data = discovery_data,
+        .function_type = kFunctionTypeNodeManagementDetailedDiscoveryData,
+    };
+
+    EVENTS_PUBLISH(events_manager, &payload);
+  }
+
+  VectorDestruct((Vector*)entities);
+  EEBUS_FREE((void*)entities);
+  return kEebusErrorOk;
 }
 
 EebusError HandleMsgDetailedDiscoveryData(NodeManagement* self, const Message* msg) {
