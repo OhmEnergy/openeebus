@@ -29,7 +29,7 @@ BindingManagerObject* GetBindingManager(NodeManagement* self) {
 }
 
 EebusError HandleMsgBindingData(NodeManagement* self, const Message* msg) {
-  if (msg->cmd_classifier != kCommandClassifierTypeCall) {
+  if (msg->cmd_classifier != kCommandClassifierTypeRead) {
     return kEebusErrorNotImplemented;
   }
 
