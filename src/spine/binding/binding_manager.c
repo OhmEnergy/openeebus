@@ -103,14 +103,20 @@ EebusError AddBinding(
   FeatureRemoteObject* const client_feature
       = DEVICE_REMOTE_GET_FEATURE_WITH_ADDRESS(remote_device, data->client_address);
 
+  if ((server_feature == NULL) || (client_feature == NULL)) {
+    return kEebusErrorNoChange;
+  }
+
   if (data->server_feature_type != NULL) {
     if (!FeatureParametersMatch(FEATURE(server_feature), kRoleTypeServer, *data->server_feature_type)) {
       return kEebusErrorNoChange;
     }
+  }
 
-    if (!FeatureParametersMatch(FEATURE(client_feature), kRoleTypeClient, *data->server_feature_type)) {
-      return kEebusErrorNoChange;
-    }
+  // Only the client's role is checked: a client may announce any feature type, including an unknown one
+  const RoleType client_role = FEATURE_GET_ROLE(FEATURE_OBJECT(client_feature));
+  if ((client_role != kRoleTypeClient) && (client_role != kRoleTypeSpecial)) {
+    return kEebusErrorNoChange;
   }
 
   // A local feature can only have one remote binding
