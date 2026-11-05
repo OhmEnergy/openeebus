@@ -43,7 +43,9 @@
 #include "src/spine/heartbeat/heartbeat_manager.h"
 #include "src/spine/model/cmd.h"
 #include "src/spine/model/device_classification_types.h"
+#include "src/spine/model/error_types.h"
 #include "src/spine/model/node_management_types.h"
+#include "src/spine/model/result_types.h"
 #include "src/spine/model/specification_version.h"
 #include "src/spine/node_management/node_management.h"
 #include "src/spine/subscription/subscription_manager.h"
@@ -871,17 +873,33 @@ FeatureLocalObject* GetFeatureWithAddress(const DeviceLocalObject* self, const F
   return ENTITY_LOCAL_GET_FEATURE_WITH_ID(entity, feature_addr->feature);
 }
 
+static bool IsAddressedToOtherDevice(const DeviceLocalObject* self, const FeatureAddressType* dest_addr) {
+  return (dest_addr != NULL) && (dest_addr->device != NULL)
+         && (strcmp(dest_addr->device, DEVICE_GET_ADDRESS(DEVICE_OBJECT(self))) != 0);
+}
+
+static bool IsRequestCmdClassifier(CommandClassifierType cmd_classifier) {
+  return (cmd_classifier == kCommandClassifierTypeRead) || (cmd_classifier == kCommandClassifierTypeWrite)
+         || (cmd_classifier == kCommandClassifierTypeCall);
+}
+
 EebusError ProcessCmd(
     DeviceLocalObject* self,
     const DatagramType* datagram,
     const CmdType* cmd,
-    DeviceRemoteObject* remote_device
+    DeviceRemoteObject* remote_device,
+    ErrorNumberType* error_number
 ) {
   const HeaderType* header = datagram->header;
 
   const FeatureAddressType* const dest_addr = header->dest_addr;
   FeatureLocalObject* const local_feature   = DEVICE_LOCAL_GET_FEATURE_WITH_ADDRESS(self, dest_addr);
   if (local_feature == NULL) {
+    // A datagram for another device is not answered; one for an unknown feature of this device is
+    if (!IsAddressedToOtherDevice(self, dest_addr)) {
+      *error_number = kErrorNumberTypeDestinationUnknown;
+    }
+
     return kEebusErrorInputArgumentOutOfRange;
   }
 
@@ -918,13 +936,15 @@ EebusError ProcessCmd(
     const FeatureAddressType* local_feature_addr  = FEATURE_GET_ADDRESS(FEATURE_OBJECT(local_feature));
     const FeatureAddressType* remote_feature_addr = FEATURE_GET_ADDRESS(FEATURE_OBJECT(remote_feature));
     if (!BINDING_MANAGER_HAS_BINDING(bm, local_feature_addr, remote_feature_addr)) {
+      *error_number = kErrorNumberTypeBindingIsNecessaryForThisCommand;
       return kEebusErrorNoChange;
     }
   }
 
   const EebusError err = FEATURE_LOCAL_HANDLE_MESSAGE(local_feature, &message);
   if (err != kEebusErrorOk) {
-    // TODO: Add error handling
+    const bool is_unsupported = (cmd->data_choice == NULL) || (err == kEebusErrorNotImplemented);
+    *error_number = is_unsupported ? kErrorNumberTypeCommandNotSupported : kErrorNumberTypeCommandRejected;
     return err;
   }
 
@@ -957,23 +977,29 @@ EebusError ProcessDatagram(DeviceLocalObject* self, const DatagramType* datagram
     return kEebusErrorInputArgumentNull;
   }
 
-  EebusError err = kEebusErrorOk;
+  EebusError err               = kEebusErrorOk;
+  ErrorNumberType error_number = kErrorNumberTypeNoError;
   for (size_t i = 0; i < datagram->payload->cmd_size; ++i) {
     if (datagram->payload->cmd[i] == NULL) {
       DEVICE_LOCAL_DEBUG_PRINTF("%s(), command is NULL\n", __func__);
       return kEebusErrorInputArgumentNull;
     }
 
-    err = ProcessCmd(self, datagram, datagram->payload->cmd[i], remote_device);
+    err = ProcessCmd(self, datagram, datagram->payload->cmd[i], remote_device, &error_number);
     if (err != kEebusErrorOk) {
       DEVICE_LOCAL_DEBUG_PRINTF("%s(), error processing command: %d\n", __func__, err);
       break;
     }
   }
 
+  const CommandClassifierType cmd_classifier = *datagram->header->cmd_classifier;
+  SenderObject* const sender                 = DEVICE_REMOTE_GET_SENDER(remote_device);
+
+  // The result is sent from this device even when the request left the destination device out
+  const FeatureAddressType local_addr = {.device = DEVICE_GET_ADDRESS(DEVICE_OBJECT(self))};
+
   if (err == kEebusErrorOk) {
-    const bool* const ack_request        = datagram->header->ack_request;
-    CommandClassifierType cmd_classifier = *datagram->header->cmd_classifier;
+    const bool* const ack_request = datagram->header->ack_request;
 
     const bool is_ack_cmd_classifier = (cmd_classifier == kCommandClassifierTypeCall)
                                        || (cmd_classifier == kCommandClassifierTypeReply)
@@ -981,9 +1007,16 @@ EebusError ProcessDatagram(DeviceLocalObject* self, const DatagramType* datagram
 
     if ((ack_request != NULL) && (*ack_request) && (is_ack_cmd_classifier)) {
       // Return success as defined in SPINE chapter 5.2.4
-      SenderObject* const sender = DEVICE_REMOTE_GET_SENDER(remote_device);
-      SEND_RESULT_SUCCESS(sender, datagram->header, datagram->header->dest_addr);
+      SEND_RESULT_SUCCESS(sender, datagram->header, &local_addr);
     }
+  } else if ((error_number != kErrorNumberTypeNoError) && IsRequestCmdClassifier(cmd_classifier)) {
+    // A rejected request is answered whether or not it asked for an acknowledgement
+    const ErrorType error = {
+        .error_number = error_number,
+        .description  = NULL,
+    };
+
+    SEND_RESULT_ERROR(sender, datagram->header, &local_addr, &error);
   }
 
   return err;
