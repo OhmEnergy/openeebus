@@ -26,6 +26,7 @@
 #include "src/common/eebus_mutex/eebus_mutex.h"
 #include "src/common/eebus_queue/eebus_queue.h"
 #include "src/common/eebus_thread/eebus_thread.h"
+#include "src/common/eebus_timer/eebus_timer.h"
 #include "src/common/service_details.h"
 #include "src/common/string_util.h"
 #include "src/common/vector.h"
@@ -62,7 +63,15 @@ enum ShipNodeQueueMsgType {
   kShipNodeQueueMsgTypePromoteFingerprint,
   kShipNodeQueueMsgTypeApprovePendingSki,
   kShipNodeQueueMsgTypeRevokePairingFingerprint,
+  kShipNodeQueueMsgTypeCloseDoubleConnection,
+  kShipNodeQueueMsgTypeDoubleConnectionTimeout,
 };
+
+/**
+ * SHIP 12.2.3: how long the node with the smaller SKI waits for the peer to
+ * close one of two connections before it closes the older one itself.
+ */
+static const uint32_t kDoubleConnectionTimeoutMs = 3000;
 
 typedef enum ShipNodeQueueMsgType ShipNodeQueueMsgType;
 
@@ -164,6 +173,10 @@ ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreatorObj
 static bool ShipNodeIsClientSupported(ShipNode* self);
 static bool ShipNodeIsServerSupported(ShipNode* self);
 static void ShipNodeRetryTimerCallback(void* ctx);
+static void ShipNodeDoubleConnectionTimerCallback(void* ctx);
+static void ShipNodeResolveDoubleConnection(ShipNode* self, const char* remote_ski, ShipConnectionObject* older);
+static void ShipNodeCloseDoubleConnection(ShipNode* self, ShipConnectionObject* sc);
+static void ShipNodeCloseAllDoubleConnections(ShipNode* self);
 
 static void ShipNodeQueueMsgDeallocator(void* msg) {
   if (msg == NULL) {
@@ -202,6 +215,16 @@ static void ShipNodeRetryTimerCallback(void* ctx) {
   EEBUS_QUEUE_SEND(sn->msg_queue, &queue_msg, kTimeoutInfinite);
 }
 
+static void ShipNodeDoubleConnectionTimerCallback(void* ctx) {
+  ShipNode* const sn = (ShipNode*)ctx;
+  if (sn->cancel) {
+    return;
+  }
+
+  ShipNodeQueueMessage queue_msg = {.type = kShipNodeQueueMsgTypeDoubleConnectionTimeout};
+  EEBUS_QUEUE_SEND(sn->msg_queue, &queue_msg, kTimeoutInfinite);
+}
+
 void ShipNodeConstruct(
     ShipNode* self,
     const char* ski,
@@ -236,6 +259,9 @@ void ShipNodeConstruct(
   self->ship_node_reader      = ship_node_reader;
   self->tsl_certificate       = tsl_certificate;
   self->local_service_details = local_service_details;
+
+  self->local_ski               = StringCopy(ski);
+  self->double_connection_timer = EebusTimerCreate(ShipNodeDoubleConnectionTimerCallback, self);
 
   self->ship_pairing = ShipPairingCreate(local_service_details->ship_id, tsl_certificate);
   if (self->ship_pairing != NULL) {
@@ -293,6 +319,15 @@ void Destruct(InfoProviderObject* self) {
   StringDelete(sn->remote_fingerprint);
   sn->remote_fingerprint = NULL;
 
+  if (sn->double_connection_timer != NULL) {
+    EEBUS_TIMER_STOP(sn->double_connection_timer);
+    EebusTimerDelete(sn->double_connection_timer);
+    sn->double_connection_timer = NULL;
+  }
+
+  StringDelete(sn->local_ski);
+  sn->local_ski = NULL;
+
   if (sn->mdns != NULL) {
     SHIP_MDNS_DESTRUCT(sn->mdns);
     EEBUS_FREE(sn->mdns);
@@ -316,8 +351,14 @@ void Destruct(InfoProviderObject* self) {
 
   // Stop and delete every active connection before releasing the table
   for (size_t i = 0; i < NODE_CONNECTION_CONTAINER_GET_SIZE(sn->connections); ++i) {
-    NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_GET_WITH_INDEX(sn->connections, i);
-    ShipConnectionObject* sc = NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc);
+    NodeConnectionObject* nc    = NODE_CONNECTION_CONTAINER_GET_WITH_INDEX(sn->connections, i);
+    ShipConnectionObject* older = NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc);
+    ShipConnectionObject* sc    = NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc);
+    if (older != NULL) {
+      SHIP_CONNECTION_STOP(older);
+      ShipConnectionDelete(older);
+    }
+
     if (sc != NULL) {
       SHIP_CONNECTION_STOP(sc);
       ShipConnectionDelete(sc);
@@ -423,18 +464,35 @@ void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_erro
   // pointers from a double-close event on a superseded connection.
   EEBUS_MUTEX_LOCK(self->mutex);
 
-  char* ski                = NULL;
-  uint32_t retry_delay     = 0;
-  bool discard             = false;
-  NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SHIP_CONNECTION(self->connections, sc);
+  char* ski                   = NULL;
+  uint32_t retry_delay        = 0;
+  bool discard                = false;
+  bool reconnect              = false;
+  bool notify_disconnected    = true;
+  ShipConnectionObject* older = NULL;
+  NodeConnectionObject* nc    = NODE_CONNECTION_CONTAINER_FIND_WITH_SHIP_CONNECTION(self->connections, sc);
   if (nc != NULL) {
-    discard     = NODE_CONNECTION(nc)->provisional && !NODE_CONNECTION(nc)->is_trusted;
-    ski         = StringCopy(NODE_CONNECTION_GET_SKI(nc));
-    retry_delay = NODE_CONNECTION_ON_CONNECTION_CLOSED(nc);
-    if (discard) {
-      NODE_CONNECTION_CONTAINER_REMOVE_WITH_SKI(self->connections, NODE_CONNECTION_GET_SKI(nc));
-    } else if (!self->cancel && (retry_delay > 0)) {
-      NODE_CONNECTION_SCHEDULE_RETRY(nc, retry_delay);
+    NodeConnection* const peer = NODE_CONNECTION(nc);
+    ski                        = StringCopy(NODE_CONNECTION_GET_SKI(nc));
+    if (peer->superseded == sc) {
+      // One of two connections to the peer closed and the other carries on. Its
+      // remote device goes only if it had one and the other has none yet.
+      notify_disconnected = peer->superseded_handshake_complete && !peer->handshake_complete;
+      NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc);
+    } else if ((peer->superseded != NULL) && !peer->handshake_complete) {
+      // The newer connection closed before data exchange: the older one carries on
+      notify_disconnected = false;
+      NODE_CONNECTION_RESTORE_SUPERSEDED_CONNECTION(nc);
+    } else {
+      older       = NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc);
+      discard     = peer->provisional && !peer->is_trusted;
+      retry_delay = NODE_CONNECTION_ON_CONNECTION_CLOSED(nc);
+      reconnect   = !self->cancel && !discard && (retry_delay == 0);
+      if (discard) {
+        NODE_CONNECTION_CONTAINER_REMOVE_WITH_SKI(self->connections, NODE_CONNECTION_GET_SKI(nc));
+      } else if (!self->cancel && (retry_delay > 0)) {
+        NODE_CONNECTION_SCHEDULE_RETRY(nc, retry_delay);
+      }
     }
   }
 
@@ -442,11 +500,22 @@ void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_erro
 
   if (nc != NULL) {
     SHIP_CONNECTION_STOP(sc);
-    SHIP_NODE_DEBUG_PRINTF("%s(), connection closed\n", __func__);
-    SHIP_NODE_READER_ON_REMOTE_SKI_DISCONNECTED(self->ship_node_reader, ski);
-    ShipConnectionDelete(sc);
+    if (older != NULL) {
+      // The peer stays trusted, so the close gives no reason rather than the
+      // removed connection a stop announces.
+      SHIP_CONNECTION_CLOSE_CONNECTION(older, true, 0, kShipCloseReasonUnspecific);
+      SHIP_CONNECTION_STOP(older);
+    }
 
-    if (!self->cancel && !discard && (retry_delay == 0) && (ski != NULL)) {
+    SHIP_NODE_DEBUG_PRINTF("%s(), connection closed\n", __func__);
+    if (notify_disconnected) {
+      SHIP_NODE_READER_ON_REMOTE_SKI_DISCONNECTED(self->ship_node_reader, ski);
+    }
+
+    ShipConnectionDelete(sc);
+    ShipConnectionDelete(older);
+
+    if (reconnect && (ski != NULL)) {
       ShipNodeConnectToPendingSki(self, ski);
     }
   }
@@ -478,7 +547,7 @@ void HandleConnectionClosed(InfoProviderObject* self, ShipConnectionObject* sc, 
   EEBUS_MUTEX_LOCK(sn->mutex);
   NodeConnectionObject* nc    = NODE_CONNECTION_CONTAINER_FIND_WITH_SHIP_CONNECTION(sn->connections, sc);
   bool current_pairing_closed = false;
-  if (nc != NULL) {
+  if ((nc != NULL) && (NODE_CONNECTION(nc)->connection == sc)) {
     current_pairing_closed
         = NODE_CONNECTION(nc)->handshake_complete && ShipNodeIsCurrentPairingPeer(sn, NODE_CONNECTION(nc));
     NODE_CONNECTION(nc)->pending_approval_id = 0;
@@ -518,18 +587,64 @@ bool IsWaitingForTrustAllowed(InfoProviderObject* self, const char* ski) {
   return SHIP_NODE_READER_IS_WAITING_FOR_TRUST_ALLOWED(sn->ship_node_reader, ski);
 }
 
+// Caller holds the node mutex. A state report carries only the SKI, so the
+// connection that reached data exchange is told apart by the states of both.
+static bool ShipNodeIsSupersededInDataExchange(const NodeConnection* peer) {
+  if ((peer->superseded == NULL) || peer->superseded_handshake_complete
+      || (SHIP_CONNECTION_GET_SHIP_STATE(peer->superseded, NULL) != kDataExchange)) {
+    return false;
+  }
+
+  return (peer->connection == NULL) || peer->handshake_complete
+         || (SHIP_CONNECTION_GET_SHIP_STATE(peer->connection, NULL) != kDataExchange);
+}
+
+// Runs on the connection thread of a dialled connection once the peer answered
+// its CMI message, which follows the TLS handshake. SHIP 12.2.3 orders the
+// connections to one peer by when their TLS handshake completed.
+static void ShipNodeOnClientConnectionEstablished(ShipNode* self, const char* ski) {
+  ShipConnectionObject* older = NULL;
+  const bool bigger_ski       = ShipNodeHasBiggerSki(self->local_ski, ski);
+
+  EEBUS_MUTEX_LOCK(self->mutex);
+  NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(self->connections, ski);
+  if (nc != NULL) {
+    NodeConnection* const peer = NODE_CONNECTION(nc);
+    // With the bigger SKI the connection set aside is already being closed.
+    if (!bigger_ski && (peer->dialed_connection != NULL) && (peer->superseded == peer->dialed_connection)) {
+      NODE_CONNECTION_SWAP_SUPERSEDED_CONNECTION(nc);
+    }
+
+    if ((peer->dialed_connection != NULL) && (peer->connection == peer->dialed_connection)) {
+      older = peer->superseded;
+    }
+  }
+
+  EEBUS_MUTEX_UNLOCK(self->mutex);
+
+  if (older != NULL) {
+    ShipNodeResolveDoubleConnection(self, ski, older);
+  }
+}
+
 void HandleShipStateUpdate(InfoProviderObject* self, const char* ski, SmeState state, const char* err) {
   UNUSED(err);
   ShipNode* const sn = SHIP_NODE(self);
 
   SHIP_NODE_READER_ON_SHIP_STATE_UPDATE(sn->ship_node_reader, ski, state);
 
+  if (state == kCmiStateClientEvaluate) {
+    ShipNodeOnClientConnectionEstablished(sn, ski);
+  }
+
   if (state == kDataExchange) {
     bool just_completed            = false;
     bool current_pairing_connected = false;
     EEBUS_MUTEX_LOCK(sn->mutex);
     NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(sn->connections, ski);
-    if (nc != NULL) {
+    if ((nc != NULL) && ShipNodeIsSupersededInDataExchange(NODE_CONNECTION(nc))) {
+      NODE_CONNECTION(nc)->superseded_handshake_complete = true;
+    } else if (nc != NULL) {
       just_completed            = NODE_CONNECTION_ON_HANDSHAKE_COMPLETE(nc);
       current_pairing_connected = just_completed && ShipNodeIsCurrentPairingPeer(sn, NODE_CONNECTION(nc));
     }
@@ -837,10 +952,16 @@ void ShipNodeRevokePairingFingerprint(ShipNode* sn, const char* fingerprint) {
       continue;
     }
 
-    ShipConnectionObject* sc = NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc);
+    ShipConnectionObject* older = NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc);
+    ShipConnectionObject* sc    = NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc);
     // Pairing can trust a peer before its SKI is known, so remove the entry directly.
     NODE_CONNECTION_CONTAINER_REMOVE(sn->connections, nc);
     EEBUS_MUTEX_UNLOCK(sn->mutex);
+
+    if (older != NULL) {
+      SHIP_CONNECTION_STOP(older);
+      ShipConnectionDelete(older);
+    }
 
     if (sc != NULL) {
       SHIP_CONNECTION_STOP(sc);
@@ -999,6 +1120,57 @@ static void ShipNodeApprovePendingHandshake(ShipNode* self, ShipConnectionObject
   }
 }
 
+// SHIP 12.2.3: of two connections to one peer, the node with the bigger SKI
+// keeps the newer one and closes the older at once. The node with the smaller
+// SKI keeps both and leaves the choice to the peer, closing the older one
+// itself only if the peer has not closed either within 3 seconds.
+static void ShipNodeResolveDoubleConnection(ShipNode* self, const char* remote_ski, ShipConnectionObject* older) {
+  if (ShipNodeHasBiggerSki(self->local_ski, remote_ski)) {
+    ShipNodeQueueMessage queue_msg = {
+        .type            = kShipNodeQueueMsgTypeCloseDoubleConnection,
+        .ship_connection = older,
+    };
+
+    EEBUS_QUEUE_SEND(self->msg_queue, &queue_msg, kTimeoutInfinite);
+  } else if (self->double_connection_timer != NULL) {
+    EEBUS_TIMER_STOP(self->double_connection_timer);
+    EEBUS_TIMER_START(self->double_connection_timer, kDoubleConnectionTimeoutMs, false);
+  }
+}
+
+// Runs on the connection loop thread, the only one that deletes connections.
+// A connection in data exchange is ended with an SME close announcement
+// (13.4.8) giving no reason, as the peer stays trusted.
+static void ShipNodeCloseDoubleConnection(ShipNode* self, ShipConnectionObject* sc) {
+  EEBUS_MUTEX_LOCK(self->mutex);
+  NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SHIP_CONNECTION(self->connections, sc);
+  const bool superseded    = (nc != NULL) && (NODE_CONNECTION(nc)->superseded == sc);
+  EEBUS_MUTEX_UNLOCK(self->mutex);
+
+  if (superseded) {
+    SHIP_NODE_DEBUG_PRINTF("%s(), closing the older of two connections to a peer\n", __func__);
+    SHIP_CONNECTION_CLOSE_CONNECTION(sc, true, 0, kShipCloseReasonUnspecific);
+  }
+}
+
+// The peer with the bigger SKI left a double connection open for 3 seconds.
+// The older connection is closed without the WebSocket ping probe of 12.2.3.
+static void ShipNodeCloseAllDoubleConnections(ShipNode* self) {
+  EEBUS_MUTEX_LOCK(self->mutex);
+  const size_t connection_count = NODE_CONNECTION_CONTAINER_GET_SIZE(self->connections);
+  EEBUS_MUTEX_UNLOCK(self->mutex);
+  for (size_t i = 0; i < connection_count; ++i) {
+    EEBUS_MUTEX_LOCK(self->mutex);
+    NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_GET_WITH_INDEX(self->connections, i);
+    ShipConnectionObject* sc = (nc == NULL) ? NULL : NODE_CONNECTION(nc)->superseded;
+    EEBUS_MUTEX_UNLOCK(self->mutex);
+
+    if (sc != NULL) {
+      ShipNodeCloseDoubleConnection(self, sc);
+    }
+  }
+}
+
 void* ShipNodeConnectionLoop(void* ctx) {
   ShipNode* const sn             = (ShipNode*)ctx;
   ShipNodeQueueMessage queue_msg = {0};
@@ -1029,12 +1201,24 @@ void* ShipNodeConnectionLoop(void* ctx) {
       ShipNodeApprovePendingHandshake(sn, queue_msg.ship_connection, queue_msg.approval_id);
     } else if (queue_msg.type == kShipNodeQueueMsgTypeRevokePairingFingerprint) {
       ShipNodeRevokePairingFingerprint(sn, queue_msg.ski);
+    } else if (queue_msg.type == kShipNodeQueueMsgTypeCloseDoubleConnection) {
+      ShipNodeCloseDoubleConnection(sn, queue_msg.ship_connection);
+    } else if (queue_msg.type == kShipNodeQueueMsgTypeDoubleConnectionTimeout) {
+      ShipNodeCloseAllDoubleConnections(sn);
     }
 
     ShipNodeQueueMsgDeallocator(&queue_msg);
   }
 
   return NULL;
+}
+
+// Caller holds the node mutex. An incoming connection that set the current one
+// aside and then failed hands the current role back to it.
+static void ShipNodeRejectDoubleConnection(NodeConnectionObject* nc, bool double_connection) {
+  if (double_connection) {
+    NODE_CONNECTION_RESTORE_SUPERSEDED_CONNECTION(nc);
+  }
 }
 
 int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreatorObject* websocket_creator, void* ctx) {
@@ -1080,10 +1264,18 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
     return -1;
   }
 
+  // SHIP 12.2.3: a trusted peer may connect while another connection to it is
+  // open. The incoming connection, whose TLS handshake has just completed, is
+  // the newer one; the other is set aside until one of the two is closed.
+  bool double_connection = false;
   if ((nc != NULL) && NODE_CONNECTION_IS_ATTEMPT_RUNNING(nc)) {
-    EEBUS_MUTEX_UNLOCK(sn->mutex);
-    SHIP_NODE_DEBUG_PRINTF("%s(), rejecting: already connected\n", __func__);
-    return -1;
+    if (!recognised || !NODE_CONNECTION_SUPERSEDE_CONNECTION(nc)) {
+      EEBUS_MUTEX_UNLOCK(sn->mutex);
+      SHIP_NODE_DEBUG_PRINTF("%s(), rejecting: already connected\n", __func__);
+      return -1;
+    }
+
+    double_connection = true;
   }
 
   if (nc == NULL) {
@@ -1107,6 +1299,7 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
     if (expected_fingerprint == NULL) {
       NODE_CONNECTION(nc)->is_trusted  = false;
       NODE_CONNECTION(nc)->provisional = true;
+      ShipNodeRejectDoubleConnection(nc, double_connection);
       EEBUS_MUTEX_UNLOCK(sn->mutex);
       return -1;
     }
@@ -1119,6 +1312,7 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
   if (!SkiMatches(NODE_CONNECTION(nc)->ski, ski)) {
     char* ski_copy = StringCopy(ski);
     if (ski_copy == NULL) {
+      ShipNodeRejectDoubleConnection(nc, double_connection);
       EEBUS_MUTEX_UNLOCK(sn->mutex);
       return -1;
     }
@@ -1131,12 +1325,18 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
   NODE_CONNECTION(nc)->peer_fingerprint = StringCopy(peer_fingerprint);
 
   if (NODE_CONNECTION_SERVER_CONNECT(nc, websocket_creator, sn->local_service_details->ship_id) != kEebusErrorOk) {
+    ShipNodeRejectDoubleConnection(nc, double_connection);
     EEBUS_MUTEX_UNLOCK(sn->mutex);
     SHIP_NODE_DEBUG_PRINTF("%s(), creating ship connection failed\n", __func__);
     return -1;
   }
 
+  ShipConnectionObject* const older = double_connection ? NODE_CONNECTION(nc)->superseded : NULL;
   EEBUS_MUTEX_UNLOCK(sn->mutex);
+
+  if (older != NULL) {
+    ShipNodeResolveDoubleConnection(sn, ski, older);
+  }
 
   return 0;
 }
@@ -1188,12 +1388,22 @@ void Stop(ShipNodeObject* self) {
   // Stop all active connections so Destruct never encounters a live connection.
   // Iterate with mutex held but release before SHIP_CONNECTION_STOP (blocks on
   // thread join) to avoid a deadlock with the connection's own close callback.
+  if (sn->double_connection_timer != NULL) {
+    EEBUS_TIMER_STOP(sn->double_connection_timer);
+  }
+
   for (size_t i = 0; i < NODE_CONNECTION_CONTAINER_GET_SIZE(sn->connections); ++i) {
     EEBUS_MUTEX_LOCK(sn->mutex);
-    NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_GET_WITH_INDEX(sn->connections, i);
-    ShipConnectionObject* sc = NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc);
+    NodeConnectionObject* nc    = NODE_CONNECTION_CONTAINER_GET_WITH_INDEX(sn->connections, i);
+    ShipConnectionObject* older = NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc);
+    ShipConnectionObject* sc    = NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc);
     NODE_CONNECTION_STOP_RETRY_TIMER(nc);
     EEBUS_MUTEX_UNLOCK(sn->mutex);
+
+    if (older != NULL) {
+      SHIP_CONNECTION_STOP(older);
+      ShipConnectionDelete(older);
+    }
 
     if (sc != NULL) {
       SHIP_CONNECTION_STOP(sc);
@@ -1255,14 +1465,21 @@ void ShipNodeUnregisterSki(ShipNodeObject* self, const char* ski) {
   ShipNode* const sn = SHIP_NODE(self);
 
   EEBUS_MUTEX_LOCK(sn->mutex);
-  NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(sn->connections, ski);
-  ShipConnectionObject* sc = NULL;
+  NodeConnectionObject* nc    = NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(sn->connections, ski);
+  ShipConnectionObject* sc    = NULL;
+  ShipConnectionObject* older = NULL;
   if (nc != NULL) {
-    sc = NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc);
+    older = NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc);
+    sc    = NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc);
     NODE_CONNECTION_CONTAINER_REMOVE_WITH_SKI(sn->connections, ski);
   }
 
   EEBUS_MUTEX_UNLOCK(sn->mutex);
+
+  if (older != NULL) {
+    SHIP_CONNECTION_STOP(older);
+    ShipConnectionDelete(older);
+  }
 
   if (sc != NULL) {
     SHIP_CONNECTION_STOP(sc);

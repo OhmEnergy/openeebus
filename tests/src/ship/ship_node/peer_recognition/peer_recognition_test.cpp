@@ -184,3 +184,50 @@ TEST(ServiceDetailsFingerprintTest, CopiesAServiceThatHasNoFingerprint) {
   ServiceDetailsDelete(details);
   ServiceDetailsDelete(copy);
 }
+
+/**
+ * @brief Tests for which node keeps the newest of two connections
+ *
+ * SHIP TS 1.1.0, section 12.2.3: the node with the bigger 160 bit SKI value
+ * keeps the most recent connection and closes the others.
+ */
+TEST(ShipNodeDoubleConnectionTest, ComparesTheSkisAsNumbers) {
+  EXPECT_TRUE(
+      ShipNodeHasBiggerSki("ff00000000000000000000000000000000000000", "0fffffffffffffffffffffffffffffffffffffff")
+  );
+  EXPECT_FALSE(
+      ShipNodeHasBiggerSki("0fffffffffffffffffffffffffffffffffffffff", "ff00000000000000000000000000000000000000")
+  );
+  EXPECT_TRUE(
+      ShipNodeHasBiggerSki("0000000000000000000000000000000000000002", "0000000000000000000000000000000000000001")
+  );
+}
+
+TEST(ShipNodeDoubleConnectionTest, ExactlyOneOfTwoNodesHasTheBiggerSki) {
+  const char* const a = "1a2b3c4d5e6f708192a3b4c5d6e7f80910111213";
+  const char* const b = "1a2b3c4d5e6f708192a3b4c5d6e7f80910111214";
+  EXPECT_NE(ShipNodeHasBiggerSki(a, b), ShipNodeHasBiggerSki(b, a));
+}
+
+TEST(ShipNodeDoubleConnectionTest, IgnoresLetterCase) {
+  EXPECT_FALSE(
+      ShipNodeHasBiggerSki("ABCDEF0000000000000000000000000000000000", "abcdef0000000000000000000000000000000000")
+  );
+  EXPECT_FALSE(
+      ShipNodeHasBiggerSki("abcdef0000000000000000000000000000000000", "ABCDEF0000000000000000000000000000000000")
+  );
+  EXPECT_TRUE(
+      ShipNodeHasBiggerSki("ABCDEF0000000000000000000000000000000001", "abcdef0000000000000000000000000000000000")
+  );
+}
+
+TEST(ShipNodeDoubleConnectionTest, ClaimsNothingForAMalformedSki) {
+  // A node that cannot compare behaves as the smaller one: it keeps both
+  // connections and leaves the choice to the peer.
+  EXPECT_FALSE(ShipNodeHasBiggerSki(nullptr, "0000000000000000000000000000000000000001"));
+  EXPECT_FALSE(ShipNodeHasBiggerSki("ff00000000000000000000000000000000000000", nullptr));
+  EXPECT_FALSE(ShipNodeHasBiggerSki("ff0000", "0000000000000000000000000000000000000001"));
+  EXPECT_FALSE(
+      ShipNodeHasBiggerSki("zz00000000000000000000000000000000000000", "0000000000000000000000000000000000000001")
+  );
+}

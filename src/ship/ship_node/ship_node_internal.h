@@ -17,11 +17,13 @@
 #define SRC_SHIP_SHIP_NODE_SHIP_NODE_INTERNAL_H_
 
 #include <stdbool.h>
+#include <string.h>
 
 #include "node_connection_container.h"
 #include "src/common/api/eebus_mutex_interface.h"
 #include "src/common/api/eebus_queue_interface.h"
 #include "src/common/api/eebus_thread_interface.h"
+#include "src/common/api/eebus_timer_interface.h"
 #include "src/common/service_details.h"
 #include "src/common/string_util.h"
 #include "src/ship/api/http_server_interface.h"
@@ -70,6 +72,10 @@ struct ShipNode {
   ShipRole role;
   /** When a foreign SKI is trusted, see EebusTrustMode */
   EebusTrustMode trust_mode;
+  /** SKI of this node's own certificate, compared against a peer's in SHIP 12.2.3 */
+  char* local_ski;
+  /** Runs while a double connection waits for the peer with the bigger SKI to close one */
+  EebusTimerObject* double_connection_timer;
 };
 
 #define SHIP_NODE(obj) ((ShipNode*)(obj))
@@ -156,6 +162,29 @@ static inline bool ShipNodeIsPeerRecognised(
   }
 
   return ShipNodeFingerprintMatches(peer_fingerprint, trusted_fingerprint);
+}
+
+/**
+ * @brief Reports whether this node keeps the newest of two connections to a peer
+ *
+ * SHIP 12.2.3: when two nodes hold more than one connection to each other, the
+ * node with the bigger 160 bit SKI value keeps only the most recent connection
+ * and closes the others. The SKIs are compared as unsigned numbers, so the
+ * letter case of their hexadecimal form does not matter.
+ *
+ * @param local_ski SKI of this node, 40 hexadecimal digits
+ * @param remote_ski SKI of the peer, 40 hexadecimal digits
+ * @return true if the local SKI is the bigger one; false if it is not, or if
+ *         either SKI is not a 160 bit hexadecimal value
+ */
+static inline bool ShipNodeHasBiggerSki(const char* local_ski, const char* remote_ski) {
+  uint8_t local[20];
+  uint8_t remote[20];
+  if (!StringHexToBytes(local_ski, local, sizeof(local)) || !StringHexToBytes(remote_ski, remote, sizeof(remote))) {
+    return false;
+  }
+
+  return memcmp(local, remote, sizeof(local)) > 0;
 }
 
 #ifdef __cplusplus

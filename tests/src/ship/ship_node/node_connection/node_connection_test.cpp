@@ -172,6 +172,87 @@ TEST_F(NodeConnectionTest, ClientConnectBusyGuard) {
   EXPECT_EQ(released, SHIP_CONNECTION_OBJECT(ship_connection_mock));
 }
 
+TEST_F(NodeConnectionTest, SupersedeSetsTheCurrentConnectionAside) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject older{};
+  peer->connection          = &older;
+  peer->is_attempt_running  = true;
+  peer->handshake_complete  = true;
+  peer->pending_approval_id = 7;
+
+  EXPECT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  EXPECT_EQ(peer->connection, nullptr);
+  EXPECT_EQ(peer->superseded, &older);
+  EXPECT_TRUE(peer->superseded_handshake_complete);
+  EXPECT_FALSE(peer->handshake_complete);
+  EXPECT_FALSE(NODE_CONNECTION_IS_ATTEMPT_RUNNING(nc_));
+  EXPECT_EQ(peer->pending_approval_id, 0u);
+  EXPECT_TRUE(NODE_CONNECTION_OWNS_CONNECTION(nc_, &older));
+
+  EXPECT_EQ(NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_), &older);
+  EXPECT_FALSE(NODE_CONNECTION_OWNS_CONNECTION(nc_, &older));
+}
+
+TEST_F(NodeConnectionTest, OnlyOneConnectionIsSetAside) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject older{};
+  ShipConnectionObject newer{};
+  peer->connection = &older;
+  ASSERT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  peer->connection = &newer;
+
+  EXPECT_FALSE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  EXPECT_EQ(peer->connection, &newer);
+  EXPECT_EQ(peer->superseded, &older);
+
+  NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_);
+  NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc_);
+}
+
+TEST_F(NodeConnectionTest, NothingIsSetAsideWithoutAConnection) {
+  EXPECT_FALSE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  EXPECT_EQ(NODE_CONNECTION(nc_)->superseded, nullptr);
+}
+
+TEST_F(NodeConnectionTest, RestoreHandsTheCurrentRoleBack) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject older{};
+  peer->connection         = &older;
+  peer->handshake_complete = true;
+  ASSERT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+
+  NODE_CONNECTION_RESTORE_SUPERSEDED_CONNECTION(nc_);
+  EXPECT_EQ(peer->connection, &older);
+  EXPECT_EQ(peer->superseded, nullptr);
+  EXPECT_TRUE(peer->handshake_complete);
+  EXPECT_TRUE(NODE_CONNECTION_IS_ATTEMPT_RUNNING(nc_));
+
+  NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc_);
+}
+
+TEST_F(NodeConnectionTest, SwapExchangesTheTwoConnections) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject older{};
+  ShipConnectionObject newer{};
+  peer->connection         = &older;
+  peer->handshake_complete = true;
+  ASSERT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  peer->connection = &newer;
+
+  NODE_CONNECTION_SWAP_SUPERSEDED_CONNECTION(nc_);
+  EXPECT_EQ(peer->connection, &older);
+  EXPECT_TRUE(peer->handshake_complete);
+  EXPECT_EQ(peer->superseded, &newer);
+  EXPECT_FALSE(peer->superseded_handshake_complete);
+
+  NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_);
+  NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc_);
+}
+
+TEST_F(NodeConnectionTest, OwnsNoNullConnection) {
+  EXPECT_FALSE(NODE_CONNECTION_OWNS_CONNECTION(nc_, nullptr));
+}
+
 TEST(NodeConnectionTimerTest, DeleteWithArmedTimerNoCrash) {
   NodeConnectionObject* nc = NodeConnectionCreate("ski", nullptr, NoOpRetryFn);
   ASSERT_NE(nc, nullptr);

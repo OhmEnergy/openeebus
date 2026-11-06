@@ -36,10 +36,19 @@ struct NodeConnection {
   const char* ski;
   char* ship_id;
   ShipConnectionObject* connection;
+  /**
+   * Older connection to the same peer, kept open while a double connection is
+   * resolved (SHIP 12.2.3). Only set while connection is set.
+   */
+  ShipConnectionObject* superseded;
+  /** The connection this node dialled, while it is open */
+  const ShipConnectionObject* dialed_connection;
   uint64_t pending_approval_id;
   int attempt_cnt;
   bool is_attempt_running;
   bool handshake_complete;
+  /** Whether the superseded connection reached data exchange */
+  bool superseded_handshake_complete;
   bool is_trusted;
   bool provisional;
   bool trusted_by_pairing;

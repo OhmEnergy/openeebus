@@ -65,6 +65,10 @@ struct NodeConnectionInterface {
   bool (*on_handshake_complete)(NodeConnectionObject* self);
   EebusError (*client_connect)(NodeConnectionObject* self, WebsocketCreatorObject* wsc, const char* ship_id);
   EebusError (*server_connect)(NodeConnectionObject* self, WebsocketCreatorObject* wsc, const char* ship_id);
+  bool (*supersede_connection)(NodeConnectionObject* self);
+  ShipConnectionObject* (*release_superseded_connection)(NodeConnectionObject* self);
+  void (*restore_superseded_connection)(NodeConnectionObject* self);
+  void (*swap_superseded_connection)(NodeConnectionObject* self);
 };
 
 /**
@@ -145,6 +149,38 @@ struct NodeConnectionObject {
  */
 #define NODE_CONNECTION_SERVER_CONNECT(obj, wsc, ship_id) \
   (NODE_CONNECTION_INTERFACE(obj)->server_connect(obj, wsc, ship_id))
+
+/**
+ * @brief Node Connection Supersede Connection caller definition
+ *
+ * Moves the current connection aside so that a newer connection to the same
+ * peer can take its place (SHIP 12.2.3). Returns false when a connection is
+ * already kept aside.
+ */
+#define NODE_CONNECTION_SUPERSEDE_CONNECTION(obj) (NODE_CONNECTION_INTERFACE(obj)->supersede_connection(obj))
+
+/**
+ * @brief Node Connection Release Superseded Connection caller definition
+ */
+#define NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(obj) \
+  (NODE_CONNECTION_INTERFACE(obj)->release_superseded_connection(obj))
+
+/**
+ * @brief Node Connection Restore Superseded Connection caller definition
+ *
+ * Makes the connection kept aside the current one again, once the current one
+ * has closed.
+ */
+#define NODE_CONNECTION_RESTORE_SUPERSEDED_CONNECTION(obj) \
+  (NODE_CONNECTION_INTERFACE(obj)->restore_superseded_connection(obj))
+
+/**
+ * @brief Node Connection Swap Superseded Connection caller definition
+ *
+ * Exchanges the current connection and the one kept aside.
+ */
+#define NODE_CONNECTION_SWAP_SUPERSEDED_CONNECTION(obj) \
+  (NODE_CONNECTION_INTERFACE(obj)->swap_superseded_connection(obj))
 
 #ifdef __cplusplus
 }

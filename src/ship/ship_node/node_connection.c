@@ -40,6 +40,10 @@ static void ScheduleRetry(NodeConnectionObject* self, uint32_t delay_ms);
 static bool OnHandshakeComplete(NodeConnectionObject* self);
 static EebusError ClientConnect(NodeConnectionObject* self, WebsocketCreatorObject* wsc, const char* ship_id);
 static EebusError ServerConnect(NodeConnectionObject* self, WebsocketCreatorObject* wsc, const char* ship_id);
+static bool SupersedeConnection(NodeConnectionObject* self);
+static ShipConnectionObject* ReleaseSupersededConnection(NodeConnectionObject* self);
+static void RestoreSupersededConnection(NodeConnectionObject* self);
+static void SwapSupersededConnection(NodeConnectionObject* self);
 
 static const NodeConnectionInterface node_connection_methods = {
     .destruct                = Destruct,
@@ -54,6 +58,11 @@ static const NodeConnectionInterface node_connection_methods = {
     .on_handshake_complete   = OnHandshakeComplete,
     .client_connect          = ClientConnect,
     .server_connect          = ServerConnect,
+
+    .supersede_connection          = SupersedeConnection,
+    .release_superseded_connection = ReleaseSupersededConnection,
+    .restore_superseded_connection = RestoreSupersededConnection,
+    .swap_superseded_connection    = SwapSupersededConnection,
 };
 
 static EebusError
@@ -80,6 +89,10 @@ NodeConnectionConstruct(NodeConnection* nc, const char* ski, struct ShipNode* ow
   nc->service_details      = NULL;
   nc->owner                = owner;
   nc->retry_timer          = NULL;
+
+  nc->superseded                    = NULL;
+  nc->dialed_connection             = NULL;
+  nc->superseded_handshake_complete = false;
 
   if (retry_fn == NULL) {
     return kEebusErrorInputArgumentNull;
@@ -140,13 +153,17 @@ bool IsAttemptRunning(const NodeConnectionObject* self) {
 }
 
 bool OwnsConnection(const NodeConnectionObject* self, const ShipConnectionObject* sc) {
-  return NODE_CONNECTION(self)->connection == sc;
+  const NodeConnection* const nc = NODE_CONNECTION(self);
+  return (sc != NULL) && ((nc->connection == sc) || (nc->superseded == sc));
 }
 
 ShipConnectionObject* ReleaseShipConnection(NodeConnectionObject* self) {
   NodeConnection* const nc = NODE_CONNECTION(self);
 
   ShipConnectionObject* sc = nc->connection;
+  if (nc->dialed_connection == sc) {
+    nc->dialed_connection = NULL;
+  }
 
   nc->connection          = NULL;
   nc->pending_approval_id = 0;
@@ -172,6 +189,10 @@ static uint32_t RetryDelayMs(int attempt_cnt) {
 
 uint32_t OnConnectionClosed(NodeConnectionObject* self) {
   NodeConnection* const nc = NODE_CONNECTION(self);
+
+  if (nc->dialed_connection == nc->connection) {
+    nc->dialed_connection = NULL;
+  }
 
   nc->connection          = NULL;
   nc->pending_approval_id = 0;
@@ -237,6 +258,7 @@ EebusError ClientConnect(NodeConnectionObject* self, WebsocketCreatorObject* wsc
   const EebusError start_err = SHIP_CONNECTION_START(nc->connection, wsc);
   if (start_err == kEebusErrorOk) {
     nc->is_attempt_running = true;
+    nc->dialed_connection  = nc->connection;
     return kEebusErrorOk;
   }
 
@@ -257,4 +279,65 @@ EebusError ServerConnect(NodeConnectionObject* self, WebsocketCreatorObject* wsc
   nc->is_attempt_running = true;
   SHIP_CONNECTION_START(nc->connection, wsc);
   return kEebusErrorOk;
+}
+
+bool SupersedeConnection(NodeConnectionObject* self) {
+  NodeConnection* const nc = NODE_CONNECTION(self);
+
+  if ((nc->connection == NULL) || (nc->superseded != NULL)) {
+    return false;
+  }
+
+  nc->superseded                    = nc->connection;
+  nc->superseded_handshake_complete = nc->handshake_complete;
+  nc->connection                    = NULL;
+  nc->pending_approval_id           = 0;
+  nc->is_attempt_running            = false;
+  nc->handshake_complete            = false;
+  return true;
+}
+
+ShipConnectionObject* ReleaseSupersededConnection(NodeConnectionObject* self) {
+  NodeConnection* const nc = NODE_CONNECTION(self);
+
+  ShipConnectionObject* const sc = nc->superseded;
+  if ((sc != NULL) && (nc->dialed_connection == sc)) {
+    nc->dialed_connection = NULL;
+  }
+
+  nc->superseded                    = NULL;
+  nc->superseded_handshake_complete = false;
+  return sc;
+}
+
+void RestoreSupersededConnection(NodeConnectionObject* self) {
+  NodeConnection* const nc = NODE_CONNECTION(self);
+
+  if (nc->dialed_connection == nc->connection) {
+    nc->dialed_connection = NULL;
+  }
+
+  nc->connection                    = nc->superseded;
+  nc->handshake_complete            = nc->superseded_handshake_complete;
+  nc->superseded                    = NULL;
+  nc->superseded_handshake_complete = false;
+  nc->pending_approval_id           = 0;
+  nc->is_attempt_running            = (nc->connection != NULL);
+}
+
+void SwapSupersededConnection(NodeConnectionObject* self) {
+  NodeConnection* const nc = NODE_CONNECTION(self);
+
+  if ((nc->connection == NULL) || (nc->superseded == NULL)) {
+    return;
+  }
+
+  ShipConnectionObject* const sc = nc->connection;
+  const bool complete            = nc->handshake_complete;
+
+  nc->connection                    = nc->superseded;
+  nc->handshake_complete            = nc->superseded_handshake_complete;
+  nc->superseded                    = sc;
+  nc->superseded_handshake_complete = complete;
+  nc->pending_approval_id           = 0;
 }
