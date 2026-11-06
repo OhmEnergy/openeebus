@@ -281,8 +281,10 @@ EebusError AddBindingEntries(
   for (size_t i = 0; i < FeatureLinkContainerGetSize(&self->binding_entries); ++i) {
     const FeatureLink* const binding = FeatureLinkContainerGetElement(&self->binding_entries, i);
     if (FeatureLinkRemoteDeviceMatch(binding, device_remote)) {
-      binding_entry[i] = CreateBindingEntryData(binding);
-      if (binding_entry[i] == NULL) {
+      // Indexed by the entries kept so far, as the buffer is sized for this device's alone
+      const size_t at = binding_data->binding_entry_size;
+      binding_entry[at] = CreateBindingEntryData(binding);
+      if (binding_entry[at] == NULL) {
         return kEebusErrorMemoryAllocate;
       }
 

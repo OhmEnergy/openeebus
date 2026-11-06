@@ -290,8 +290,10 @@ EebusError AddSubscriptionEntries(
   for (size_t i = 0; i < FeatureLinkContainerGetSize(&self->subscription_entries); ++i) {
     const FeatureLink* const se = FeatureLinkContainerGetElement(&self->subscription_entries, i);
     if (FeatureLinkRemoteDeviceMatch(se, device_remote)) {
-      subscription_entry[i] = CreateSubscriptionEntryData(se);
-      if (subscription_entry[i] == NULL) {
+      // Indexed by the entries kept so far, as the buffer is sized for this device's alone
+      const size_t at = subscription_data->subscription_entry_size;
+      subscription_entry[at] = CreateSubscriptionEntryData(se);
+      if (subscription_entry[at] == NULL) {
         return kEebusErrorMemoryAllocate;
       }
 
