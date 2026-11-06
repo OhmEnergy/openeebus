@@ -60,6 +60,9 @@
 #define LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE 0
 #endif  // LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE
 
+/** Sleep after each service pass: lws_service() returns at once while a TLS step waits for the peer */
+static const uint32_t kServerServiceYieldMs = 10;
+
 typedef struct {
   struct lws* wsi;
   WebsocketObject* ws;
@@ -291,6 +294,7 @@ void* HttpServerConnectionLoop(void* self) {
 
   do {
     err = lws_service(srv->lws_ctx, 100);
+    EebusThreadUsleep((int32_t)(kServerServiceYieldMs * 1000));
   } while ((err >= 0) && (!srv->cancel));
 
   return NULL;
