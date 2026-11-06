@@ -76,6 +76,10 @@ struct ShipNode {
   char* local_ski;
   /** Runs while a double connection waits for the peer with the bigger SKI to close one */
   EebusTimerObject* double_connection_timer;
+  /** Runs for SHIP_NODE_DIAL_MIN_INTERVAL_MS after a dial starts */
+  EebusTimerObject* dial_interval_timer;
+  /** No dial starts while set */
+  bool dial_interval_running;
 };
 
 #define SHIP_NODE(obj) ((ShipNode*)(obj))

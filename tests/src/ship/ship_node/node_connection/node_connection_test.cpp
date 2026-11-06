@@ -253,6 +253,54 @@ TEST_F(NodeConnectionTest, OwnsNoNullConnection) {
   EXPECT_FALSE(NODE_CONNECTION_OWNS_CONNECTION(nc_, nullptr));
 }
 
+TEST_F(NodeConnectionTest, ClosingTheDialledConnectionEndsTheDial) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject dialled{};
+  peer->connection        = &dialled;
+  peer->dialed_connection = &dialled;
+  peer->dial_in_flight    = true;
+
+  NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_);
+  EXPECT_EQ(peer->dialed_connection, nullptr);
+  EXPECT_FALSE(peer->dial_in_flight);
+}
+
+TEST_F(NodeConnectionTest, ADialSetAsideIsStillInFlight) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject dialled{};
+  ShipConnectionObject incoming{};
+  peer->connection        = &dialled;
+  peer->dialed_connection = &dialled;
+  peer->dial_in_flight    = true;
+
+  ASSERT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  peer->connection = &incoming;
+  EXPECT_TRUE(peer->dial_in_flight);
+
+  EXPECT_EQ(NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_), &dialled);
+  EXPECT_EQ(peer->dialed_connection, nullptr);
+  EXPECT_FALSE(peer->dial_in_flight);
+
+  NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc_);
+}
+
+TEST_F(NodeConnectionTest, ReleasingAnotherConnectionKeepsTheDial) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject dialled{};
+  ShipConnectionObject incoming{};
+  peer->connection        = &dialled;
+  peer->dialed_connection = &dialled;
+  peer->dial_in_flight    = true;
+  ASSERT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  peer->connection = &incoming;
+
+  EXPECT_EQ(NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc_), &incoming);
+  EXPECT_EQ(peer->dialed_connection, &dialled);
+  EXPECT_TRUE(peer->dial_in_flight);
+
+  NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_);
+}
+
 TEST(NodeConnectionTimerTest, DeleteWithArmedTimerNoCrash) {
   NodeConnectionObject* nc = NodeConnectionCreate("ski", nullptr, NoOpRetryFn);
   ASSERT_NE(nc, nullptr);

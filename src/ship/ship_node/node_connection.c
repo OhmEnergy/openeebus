@@ -69,6 +69,13 @@ static EebusError
 NodeConnectionConstruct(NodeConnection* nc, const char* ski, struct ShipNode* owner, NodeConnectionRetryFn retry_fn);
 static uint32_t RetryDelayMs(int attempt_cnt);
 
+static void ForgetDial(NodeConnection* nc, const ShipConnectionObject* sc) {
+  if ((sc != NULL) && (nc->dialed_connection == sc)) {
+    nc->dialed_connection = NULL;
+    nc->dial_in_flight    = false;
+  }
+}
+
 EebusError
 NodeConnectionConstruct(NodeConnection* nc, const char* ski, struct ShipNode* owner, NodeConnectionRetryFn retry_fn) {
   // Override "virtual function table"
@@ -92,6 +99,8 @@ NodeConnectionConstruct(NodeConnection* nc, const char* ski, struct ShipNode* ow
 
   nc->superseded                    = NULL;
   nc->dialed_connection             = NULL;
+  nc->dial_in_flight                = false;
+  nc->dial_deferred                 = false;
   nc->superseded_handshake_complete = false;
 
   if (retry_fn == NULL) {
@@ -161,9 +170,7 @@ ShipConnectionObject* ReleaseShipConnection(NodeConnectionObject* self) {
   NodeConnection* const nc = NODE_CONNECTION(self);
 
   ShipConnectionObject* sc = nc->connection;
-  if (nc->dialed_connection == sc) {
-    nc->dialed_connection = NULL;
-  }
+  ForgetDial(nc, sc);
 
   nc->connection          = NULL;
   nc->pending_approval_id = 0;
@@ -190,9 +197,7 @@ static uint32_t RetryDelayMs(int attempt_cnt) {
 uint32_t OnConnectionClosed(NodeConnectionObject* self) {
   NodeConnection* const nc = NODE_CONNECTION(self);
 
-  if (nc->dialed_connection == nc->connection) {
-    nc->dialed_connection = NULL;
-  }
+  ForgetDial(nc, nc->connection);
 
   nc->connection          = NULL;
   nc->pending_approval_id = 0;
@@ -259,6 +264,7 @@ EebusError ClientConnect(NodeConnectionObject* self, WebsocketCreatorObject* wsc
   if (start_err == kEebusErrorOk) {
     nc->is_attempt_running = true;
     nc->dialed_connection  = nc->connection;
+    nc->dial_in_flight     = true;
     return kEebusErrorOk;
   }
 
@@ -301,9 +307,7 @@ ShipConnectionObject* ReleaseSupersededConnection(NodeConnectionObject* self) {
   NodeConnection* const nc = NODE_CONNECTION(self);
 
   ShipConnectionObject* const sc = nc->superseded;
-  if ((sc != NULL) && (nc->dialed_connection == sc)) {
-    nc->dialed_connection = NULL;
-  }
+  ForgetDial(nc, sc);
 
   nc->superseded                    = NULL;
   nc->superseded_handshake_complete = false;
@@ -313,9 +317,7 @@ ShipConnectionObject* ReleaseSupersededConnection(NodeConnectionObject* self) {
 void RestoreSupersededConnection(NodeConnectionObject* self) {
   NodeConnection* const nc = NODE_CONNECTION(self);
 
-  if (nc->dialed_connection == nc->connection) {
-    nc->dialed_connection = NULL;
-  }
+  ForgetDial(nc, nc->connection);
 
   nc->connection                    = nc->superseded;
   nc->handshake_complete            = nc->superseded_handshake_complete;

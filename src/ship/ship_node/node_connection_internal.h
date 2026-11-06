@@ -43,6 +43,10 @@ struct NodeConnection {
   ShipConnectionObject* superseded;
   /** The connection this node dialled, while it is open */
   const ShipConnectionObject* dialed_connection;
+  /** The dialled connection has not been answered by the peer yet */
+  bool dial_in_flight;
+  /** A dial to this peer waits for the node's dial slot */
+  bool dial_deferred;
   uint64_t pending_approval_id;
   int attempt_cnt;
   bool is_attempt_running;

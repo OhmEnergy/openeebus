@@ -50,6 +50,10 @@
 #define SHIP_NODE_RETRY_MAX_DELAY_MS FW_FWK_EEBUS_SHIP_RETRY_MAX_DELAY_MS
 #endif
 
+#if !defined(SHIP_NODE_DIAL_MIN_INTERVAL_MS) && defined(FW_FWK_EEBUS_SHIP_DIAL_MIN_INTERVAL_MS)
+#define SHIP_NODE_DIAL_MIN_INTERVAL_MS FW_FWK_EEBUS_SHIP_DIAL_MIN_INTERVAL_MS
+#endif
+
 /**
  * @brief Delay before the first retry after a connection to a peer closes
  */
@@ -79,6 +83,19 @@
  */
 #ifndef SHIP_NODE_RETRY_MAX_DELAY_MS
 #define SHIP_NODE_RETRY_MAX_DELAY_MS 10000
+#endif
+
+/**
+ * @brief Shortest interval between the start of two outgoing connections
+ *
+ * Applies across all peers, on top of the rule that a dial starts only once
+ * the previous one has been answered by its peer or has failed. A dial
+ * requested sooner waits for the interval to end, so a peer that closes every
+ * connection soon after accepting it cannot keep the node in back-to-back TLS
+ * handshakes. Zero leaves only the one-dial-at-a-time rule.
+ */
+#ifndef SHIP_NODE_DIAL_MIN_INTERVAL_MS
+#define SHIP_NODE_DIAL_MIN_INTERVAL_MS 1000
 #endif
 
 #endif  // SRC_SHIP_SHIP_NODE_SHIP_NODE_CONFIG_H_

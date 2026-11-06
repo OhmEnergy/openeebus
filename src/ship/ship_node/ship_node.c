@@ -19,6 +19,7 @@
 
 #include "node_connection_container.h"
 #include "node_connection_internal.h"
+#include "ship_node_config.h"
 #include "ship_node_internal.h"
 #include "src/common/eebus_arguments.h"
 #include "src/common/eebus_device_info.h"
@@ -65,6 +66,8 @@ enum ShipNodeQueueMsgType {
   kShipNodeQueueMsgTypeRevokePairingFingerprint,
   kShipNodeQueueMsgTypeCloseDoubleConnection,
   kShipNodeQueueMsgTypeDoubleConnectionTimeout,
+  kShipNodeQueueMsgTypeDialSlotFree,
+  kShipNodeQueueMsgTypeDialIntervalEnd,
 };
 
 /**
@@ -177,6 +180,7 @@ static void ShipNodeDoubleConnectionTimerCallback(void* ctx);
 static void ShipNodeResolveDoubleConnection(ShipNode* self, const char* remote_ski, ShipConnectionObject* older);
 static void ShipNodeCloseDoubleConnection(ShipNode* self, ShipConnectionObject* sc);
 static void ShipNodeCloseAllDoubleConnections(ShipNode* self);
+static void ShipNodeConnectDeferredPeers(ShipNode* self);
 
 static void ShipNodeQueueMsgDeallocator(void* msg) {
   if (msg == NULL) {
@@ -225,6 +229,21 @@ static void ShipNodeDoubleConnectionTimerCallback(void* ctx) {
   EEBUS_QUEUE_SEND(sn->msg_queue, &queue_msg, kTimeoutInfinite);
 }
 
+static void ShipNodePostDialSlotFree(ShipNode* sn) {
+  ShipNodeQueueMessage queue_msg = {.type = kShipNodeQueueMsgTypeDialSlotFree};
+  EEBUS_QUEUE_SEND(sn->msg_queue, &queue_msg, kTimeoutInfinite);
+}
+
+static void ShipNodeDialIntervalTimerCallback(void* ctx) {
+  ShipNode* const sn = (ShipNode*)ctx;
+  if (sn->cancel) {
+    return;
+  }
+
+  ShipNodeQueueMessage queue_msg = {.type = kShipNodeQueueMsgTypeDialIntervalEnd};
+  EEBUS_QUEUE_SEND(sn->msg_queue, &queue_msg, kTimeoutInfinite);
+}
+
 void ShipNodeConstruct(
     ShipNode* self,
     const char* ski,
@@ -262,6 +281,8 @@ void ShipNodeConstruct(
 
   self->local_ski               = StringCopy(ski);
   self->double_connection_timer = EebusTimerCreate(ShipNodeDoubleConnectionTimerCallback, self);
+  self->dial_interval_timer     = EebusTimerCreate(ShipNodeDialIntervalTimerCallback, self);
+  self->dial_interval_running   = false;
 
   self->ship_pairing = ShipPairingCreate(local_service_details->ship_id, tsl_certificate);
   if (self->ship_pairing != NULL) {
@@ -323,6 +344,12 @@ void Destruct(InfoProviderObject* self) {
     EEBUS_TIMER_STOP(sn->double_connection_timer);
     EebusTimerDelete(sn->double_connection_timer);
     sn->double_connection_timer = NULL;
+  }
+
+  if (sn->dial_interval_timer != NULL) {
+    EEBUS_TIMER_STOP(sn->dial_interval_timer);
+    EebusTimerDelete(sn->dial_interval_timer);
+    sn->dial_interval_timer = NULL;
   }
 
   StringDelete(sn->local_ski);
@@ -518,6 +545,8 @@ void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_erro
     if (reconnect && (ski != NULL)) {
       ShipNodeConnectToPendingSki(self, ski);
     }
+
+    ShipNodeConnectDeferredPeers(self);
   }
   StringDelete(ski);
   // else: orphaned/double close — sc must NOT be dereferenced
@@ -604,12 +633,15 @@ static bool ShipNodeIsSupersededInDataExchange(const NodeConnection* peer) {
 // connections to one peer by when their TLS handshake completed.
 static void ShipNodeOnClientConnectionEstablished(ShipNode* self, const char* ski) {
   ShipConnectionObject* older = NULL;
+  bool dial_answered          = false;
   const bool bigger_ski       = ShipNodeHasBiggerSki(self->local_ski, ski);
 
   EEBUS_MUTEX_LOCK(self->mutex);
   NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(self->connections, ski);
   if (nc != NULL) {
     NodeConnection* const peer = NODE_CONNECTION(nc);
+    dial_answered              = peer->dial_in_flight;
+    peer->dial_in_flight       = false;
     // With the bigger SKI the connection set aside is already being closed.
     if (!bigger_ski && (peer->dialed_connection != NULL) && (peer->superseded == peer->dialed_connection)) {
       NODE_CONNECTION_SWAP_SUPERSEDED_CONNECTION(nc);
@@ -624,6 +656,10 @@ static void ShipNodeOnClientConnectionEstablished(ShipNode* self, const char* sk
 
   if (older != NULL) {
     ShipNodeResolveDoubleConnection(self, ski, older);
+  }
+
+  if (dial_answered) {
+    ShipNodePostDialSlotFree(self);
   }
 }
 
@@ -1036,8 +1072,39 @@ static bool ShipNodeFindServiceForPeer(ShipNode* self, NodeConnectionObject* nc,
   return false;
 }
 
+// Caller holds the node mutex. One dial at a time is answered or fails before
+// the next one starts, and dials start at least SHIP_NODE_DIAL_MIN_INTERVAL_MS
+// apart, so a peer that is unreachable or closes every connection costs one
+// TLS handshake per interval at most.
+static bool ShipNodeIsDialSlotBusy(ShipNode* self) {
+  if (self->dial_interval_running) {
+    return true;
+  }
+
+  for (size_t i = 0; i < NODE_CONNECTION_CONTAINER_GET_SIZE(self->connections); ++i) {
+    if (NODE_CONNECTION(NODE_CONNECTION_CONTAINER_GET_WITH_INDEX(self->connections, i))->dial_in_flight) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Caller holds the node mutex
+static void ShipNodeStartDialInterval(ShipNode* self) {
+  static const uint32_t kDialMinIntervalMs = SHIP_NODE_DIAL_MIN_INTERVAL_MS;
+  if ((kDialMinIntervalMs == 0) || (self->dial_interval_timer == NULL)) {
+    return;
+  }
+
+  self->dial_interval_running = true;
+  EEBUS_TIMER_STOP(self->dial_interval_timer);
+  EEBUS_TIMER_START(self->dial_interval_timer, kDialMinIntervalMs, false);
+}
+
 // Attempt a client connection for nc.  Must be called with mutex held;
-// nc must be non-NULL with no attempt already running.
+// nc must be non-NULL with no attempt already running. A peer that has to
+// wait for the dial slot is dialled once the slot is free.
 static void ShipNodeConnectToPendingSkiInternal(ShipNode* self, NodeConnectionObject* nc) {
   MdnsEntry found = {0};
   if (!ShipNodeFindServiceForPeer(self, nc, &found)) {
@@ -1045,6 +1112,11 @@ static void ShipNodeConnectToPendingSkiInternal(ShipNode* self, NodeConnectionOb
   }
 
   NodeConnection* peer = NODE_CONNECTION(nc);
+  peer->dial_deferred  = ShipNodeIsDialSlotBusy(self);
+  if (peer->dial_deferred) {
+    return;
+  }
+
   if (!SkiMatches(peer->ski, found.ski)) {
     // Discovery locates the endpoint. Its SKI is checked against the certificate
     // for bookkeeping; trust still depends on the configured fingerprint.
@@ -1069,7 +1141,10 @@ static void ShipNodeConnectToPendingSkiInternal(ShipNode* self, NodeConnectionOb
 
   StringDelete((char*)uri);
 
-  NODE_CONNECTION_CLIENT_CONNECT(nc, wsc, self->local_service_details->ship_id);
+  if (NODE_CONNECTION_CLIENT_CONNECT(nc, wsc, self->local_service_details->ship_id) == kEebusErrorOk) {
+    ShipNodeStartDialInterval(self);
+  }
+
   WebsocketCreatorDelete(wsc);
 }
 
@@ -1102,6 +1177,22 @@ static void ShipNodeConnectToAllPendingSkis(ShipNode* self) {
   }
 
   self->search_for_remote_ski = false;
+  EEBUS_MUTEX_UNLOCK(self->mutex);
+}
+
+static void ShipNodeConnectDeferredPeers(ShipNode* self) {
+  if (!ShipNodeIsClientSupported(self)) {
+    return;
+  }
+
+  EEBUS_MUTEX_LOCK(self->mutex);
+  for (size_t i = 0; i < NODE_CONNECTION_CONTAINER_GET_SIZE(self->connections); ++i) {
+    NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_GET_WITH_INDEX(self->connections, i);
+    if (NODE_CONNECTION(nc)->dial_deferred && !NODE_CONNECTION_IS_ATTEMPT_RUNNING(nc)) {
+      ShipNodeConnectToPendingSkiInternal(self, nc);
+    }
+  }
+
   EEBUS_MUTEX_UNLOCK(self->mutex);
 }
 
@@ -1188,6 +1279,7 @@ void* ShipNodeConnectionLoop(void* ctx) {
       CloseShipConnection(sn, queue_msg.ship_connection, queue_msg.had_error);
     } else if (queue_msg.type == kShipNodeQueueMsgTypeShipUnregisterSki) {
       ShipNodeUnregisterSki(SHIP_NODE_OBJECT(sn), queue_msg.ski);
+      ShipNodeConnectDeferredPeers(sn);
     } else if (queue_msg.type == kShipNodeQueueMsgTypeShipRegisterSki) {
       ShipNodeRegisterSki(SHIP_NODE_OBJECT(sn), queue_msg.ski, queue_msg.is_trusted);
       ShipNodeConnectToPendingSki(sn, queue_msg.ski);
@@ -1201,10 +1293,18 @@ void* ShipNodeConnectionLoop(void* ctx) {
       ShipNodeApprovePendingHandshake(sn, queue_msg.ship_connection, queue_msg.approval_id);
     } else if (queue_msg.type == kShipNodeQueueMsgTypeRevokePairingFingerprint) {
       ShipNodeRevokePairingFingerprint(sn, queue_msg.ski);
+      ShipNodeConnectDeferredPeers(sn);
     } else if (queue_msg.type == kShipNodeQueueMsgTypeCloseDoubleConnection) {
       ShipNodeCloseDoubleConnection(sn, queue_msg.ship_connection);
     } else if (queue_msg.type == kShipNodeQueueMsgTypeDoubleConnectionTimeout) {
       ShipNodeCloseAllDoubleConnections(sn);
+    } else if (queue_msg.type == kShipNodeQueueMsgTypeDialSlotFree) {
+      ShipNodeConnectDeferredPeers(sn);
+    } else if (queue_msg.type == kShipNodeQueueMsgTypeDialIntervalEnd) {
+      EEBUS_MUTEX_LOCK(sn->mutex);
+      sn->dial_interval_running = false;
+      EEBUS_MUTEX_UNLOCK(sn->mutex);
+      ShipNodeConnectDeferredPeers(sn);
     }
 
     ShipNodeQueueMsgDeallocator(&queue_msg);
@@ -1390,6 +1490,10 @@ void Stop(ShipNodeObject* self) {
   // thread join) to avoid a deadlock with the connection's own close callback.
   if (sn->double_connection_timer != NULL) {
     EEBUS_TIMER_STOP(sn->double_connection_timer);
+  }
+
+  if (sn->dial_interval_timer != NULL) {
+    EEBUS_TIMER_STOP(sn->dial_interval_timer);
   }
 
   for (size_t i = 0; i < NODE_CONNECTION_CONTAINER_GET_SIZE(sn->connections); ++i) {
