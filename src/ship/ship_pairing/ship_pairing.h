@@ -36,6 +36,12 @@ extern "C" {
 #define SHIP_PAIRING_REACTIVATION_MINUTES 15
 
 /**
+ * @brief Seconds added to the reactivation interval. Section 4.3.1 sets a
+ * minimum, so processing resumes a little after it rather than on its edge.
+ */
+#define SHIP_PAIRING_REACTIVATION_MARGIN_SECONDS 180
+
+/**
  * @brief Creates a shippairing evaluator
  *
  * The SHIP ID and the certificate are this node's own: a request names them, in

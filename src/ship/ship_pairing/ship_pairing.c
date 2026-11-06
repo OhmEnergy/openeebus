@@ -233,7 +233,9 @@ void ShipPairingRestartReactivationTimer(ShipPairing* self) {
   EEBUS_MUTEX_UNLOCK(self->mutex);
 
   if (has_trusted_peer) {
-    EEBUS_TIMER_START(self->reactivation_timer, SECONDS(SHIP_PAIRING_REACTIVATION_MINUTES * 60), false);
+    EEBUS_TIMER_START(
+        self->reactivation_timer, SECONDS(SHIP_PAIRING_REACTIVATION_MINUTES * 60 + SHIP_PAIRING_REACTIVATION_MARGIN_SECONDS), false
+    );
   }
 
   EEBUS_MUTEX_LOCK(self->mutex);
