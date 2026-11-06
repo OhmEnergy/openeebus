@@ -499,16 +499,18 @@ void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_erro
   ShipConnectionObject* older = NULL;
   NodeConnectionObject* nc    = NODE_CONNECTION_CONTAINER_FIND_WITH_SHIP_CONNECTION(self->connections, sc);
   if (nc != NULL) {
-    NodeConnection* const peer = NODE_CONNECTION(nc);
-    ski                        = StringCopy(NODE_CONNECTION_GET_SKI(nc));
+    NodeConnection* const peer  = NODE_CONNECTION(nc);
+    const bool superseded_lives = !peer->handshake_complete || NodeConnectionIsSupersededDialPending(peer);
+    ski                         = StringCopy(NODE_CONNECTION_GET_SKI(nc));
     if (peer->superseded == sc) {
       // One of two connections to the peer closed and the other carries on. Its
       // remote device goes only if it had one and the other has none yet.
       notify_disconnected = peer->superseded_handshake_complete && !peer->handshake_complete;
       NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc);
-    } else if ((peer->superseded != NULL) && !peer->handshake_complete) {
-      // The newer connection closed before data exchange: the older one carries on
-      notify_disconnected = false;
+    } else if ((peer->superseded != NULL) && superseded_lives) {
+      // The current connection closed before data exchange, or while the dial
+      // set aside is still unanswered: the connection set aside carries on.
+      notify_disconnected = peer->handshake_complete;
       NODE_CONNECTION_RESTORE_SUPERSEDED_CONNECTION(nc);
     } else {
       older       = NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc);
@@ -629,12 +631,13 @@ static bool ShipNodeIsSupersededInDataExchange(const NodeConnection* peer) {
 }
 
 // Runs on the connection thread of a dialled connection once the peer answered
-// its CMI message, which follows the TLS handshake. SHIP 12.2.3 orders the
-// connections to one peer by when their TLS handshake completed.
+// its CMI message, which follows the TLS handshake. A peer may order the
+// connections by when they reach its WebSocket or SME layer rather than by TLS
+// completion, so an incoming connection accepted while the dial is unanswered
+// is resolved here: the dial is then the most recent connection for both nodes.
 static void ShipNodeOnClientConnectionEstablished(ShipNode* self, const char* ski) {
   ShipConnectionObject* older = NULL;
   bool dial_answered          = false;
-  const bool bigger_ski       = ShipNodeHasBiggerSki(self->local_ski, ski);
 
   EEBUS_MUTEX_LOCK(self->mutex);
   NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(self->connections, ski);
@@ -642,8 +645,7 @@ static void ShipNodeOnClientConnectionEstablished(ShipNode* self, const char* sk
     NodeConnection* const peer = NODE_CONNECTION(nc);
     dial_answered              = peer->dial_in_flight;
     peer->dial_in_flight       = false;
-    // With the bigger SKI the connection set aside is already being closed.
-    if (!bigger_ski && (peer->dialed_connection != NULL) && (peer->superseded == peer->dialed_connection)) {
+    if ((peer->dialed_connection != NULL) && (peer->superseded == peer->dialed_connection)) {
       NODE_CONNECTION_SWAP_SUPERSEDED_CONNECTION(nc);
     }
 
@@ -1366,7 +1368,9 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
 
   // SHIP 12.2.3: a trusted peer may connect while another connection to it is
   // open. The incoming connection, whose TLS handshake has just completed, is
-  // the newer one; the other is set aside until one of the two is closed.
+  // the newer one; the other is set aside until one of the two is closed. A
+  // dial set aside before the peer answered its CMI message is resolved once
+  // it is answered, see ShipNodeOnClientConnectionEstablished().
   bool double_connection = false;
   if ((nc != NULL) && NODE_CONNECTION_IS_ATTEMPT_RUNNING(nc)) {
     if (!recognised || !NODE_CONNECTION_SUPERSEDE_CONNECTION(nc)) {
@@ -1431,7 +1435,8 @@ int ShipNodeOnWebsocketServerConnectionCallback(const char* ski, WebsocketCreato
     return -1;
   }
 
-  ShipConnectionObject* const older = double_connection ? NODE_CONNECTION(nc)->superseded : NULL;
+  const bool resolve_now            = double_connection && !NodeConnectionIsSupersededDialPending(NODE_CONNECTION(nc));
+  ShipConnectionObject* const older = resolve_now ? NODE_CONNECTION(nc)->superseded : NULL;
   EEBUS_MUTEX_UNLOCK(sn->mutex);
 
   if (older != NULL) {

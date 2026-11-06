@@ -37,7 +37,7 @@ struct NodeConnection {
   char* ship_id;
   ShipConnectionObject* connection;
   /**
-   * Older connection to the same peer, kept open while a double connection is
+   * Other connection to the same peer, kept open while a double connection is
    * resolved (SHIP 12.2.3). Only set while connection is set.
    */
   ShipConnectionObject* superseded;
@@ -72,6 +72,15 @@ static inline bool
 NodeConnectionHasPendingApproval(const NodeConnection* self, const ShipConnectionObject* sc, uint64_t approval_id) {
   return (self != NULL) && (sc != NULL) && (self->connection == sc) && (approval_id != 0)
          && (self->pending_approval_id == approval_id);
+}
+
+/**
+ * Caller holds the node mutex. The connection set aside is this node's dial
+ * and the peer has not answered its CMI message yet.
+ */
+static inline bool NodeConnectionIsSupersededDialPending(const NodeConnection* self) {
+  return (self != NULL) && self->dial_in_flight && (self->dialed_connection != NULL)
+         && (self->superseded == self->dialed_connection);
 }
 
 #ifdef __cplusplus

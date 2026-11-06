@@ -301,6 +301,65 @@ TEST_F(NodeConnectionTest, ReleasingAnotherConnectionKeepsTheDial) {
   NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_);
 }
 
+TEST_F(NodeConnectionTest, ADialSetAsideIsPendingUntilAnswered) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject dialled{};
+  ShipConnectionObject incoming{};
+  peer->connection        = &dialled;
+  peer->dialed_connection = &dialled;
+  peer->dial_in_flight    = true;
+  EXPECT_FALSE(NodeConnectionIsSupersededDialPending(peer));
+
+  ASSERT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  peer->connection = &incoming;
+  EXPECT_TRUE(NodeConnectionIsSupersededDialPending(peer));
+
+  peer->dial_in_flight = false;
+  EXPECT_FALSE(NodeConnectionIsSupersededDialPending(peer));
+
+  NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_);
+  NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc_);
+}
+
+TEST_F(NodeConnectionTest, AnIncomingConnectionSetAsideIsNoPendingDial) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject incoming{};
+  ShipConnectionObject dialled{};
+  peer->connection = &incoming;
+  ASSERT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  peer->connection        = &dialled;
+  peer->dialed_connection = &dialled;
+  peer->dial_in_flight    = true;
+
+  EXPECT_FALSE(NodeConnectionIsSupersededDialPending(peer));
+  EXPECT_FALSE(NodeConnectionIsSupersededDialPending(nullptr));
+
+  NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_);
+  NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc_);
+}
+
+TEST_F(NodeConnectionTest, SwappingAnAnsweredDialMakesItCurrent) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject dialled{};
+  ShipConnectionObject incoming{};
+  peer->connection        = &dialled;
+  peer->dialed_connection = &dialled;
+  peer->dial_in_flight    = true;
+  ASSERT_TRUE(NODE_CONNECTION_SUPERSEDE_CONNECTION(nc_));
+  peer->connection         = &incoming;
+  peer->handshake_complete = true;
+
+  peer->dial_in_flight = false;
+  NODE_CONNECTION_SWAP_SUPERSEDED_CONNECTION(nc_);
+  EXPECT_EQ(peer->connection, &dialled);
+  EXPECT_FALSE(peer->handshake_complete);
+  EXPECT_EQ(peer->superseded, &incoming);
+  EXPECT_TRUE(peer->superseded_handshake_complete);
+
+  NODE_CONNECTION_RELEASE_SUPERSEDED_CONNECTION(nc_);
+  NODE_CONNECTION_RELEASE_SHIP_CONNECTION(nc_);
+}
+
 TEST(NodeConnectionTimerTest, DeleteWithArmedTimerNoCrash) {
   NodeConnectionObject* nc = NodeConnectionCreate("ski", nullptr, NoOpRetryFn);
   ASSERT_NE(nc, nullptr);
