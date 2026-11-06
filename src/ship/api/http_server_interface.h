@@ -21,6 +21,8 @@
 #ifndef SRC_SHIP_API_HTTP_SERVER_INTERFACE_H_
 #define SRC_SHIP_API_HTTP_SERVER_INTERFACE_H_
 
+#include <stdbool.h>
+
 #include "src/common/eebus_errors.h"
 #include "src/ship/api/websocket_creator_interface.h"
 
@@ -71,6 +73,17 @@ struct HttpServerInterface {
    *         or NULL if it is not known
    */
   const char* (*get_peer_fingerprint)(const HttpServerObject* self);
+
+  /**
+   * @brief Whether an incoming connection has been accepted and has not yet
+   * reached the WebsocketServerCallbackType call or been closed
+   *
+   * The peer of such a connection is not known until its TLS handshake ends.
+   * Appended to the end of the table and may be NULL.
+   *
+   * @return true while at least one incoming connection is in that state
+   */
+  bool (*is_accept_pending)(const HttpServerObject* self);
 };
 
 /**
@@ -99,6 +112,19 @@ static inline const char* HttpServerGetPeerFingerprint(const HttpServerObject* o
   }
 
   return obj->interface_->get_peer_fingerprint(obj);
+}
+
+/**
+ * @brief Whether an incoming connection is still in its handshake
+ *
+ * @return false if the backend does not report it
+ */
+static inline bool HttpServerIsAcceptPending(const HttpServerObject* obj) {
+  if ((obj == NULL) || (obj->interface_->is_accept_pending == NULL)) {
+    return false;
+  }
+
+  return obj->interface_->is_accept_pending(obj);
 }
 
 /**

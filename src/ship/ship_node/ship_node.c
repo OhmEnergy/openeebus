@@ -1104,6 +1104,21 @@ static void ShipNodeStartDialInterval(ShipNode* self) {
   EEBUS_TIMER_START(self->dial_interval_timer, kDialMinIntervalMs, false);
 }
 
+// Caller holds the node mutex. A peer is not known until the TLS handshake of
+// its incoming connection ends, so while any incoming connection is in its
+// handshake no dial starts: it could be to the same peer, and two TLS
+// handshakes at once starve the lower-priority threads. The dial interval is
+// restarted so the deferred dials are tried again once it ends. Without a dial
+// interval there is nothing to try them again, and the dial goes ahead.
+static bool ShipNodeIsDialHeldForIncoming(ShipNode* self) {
+  if (!HttpServerIsAcceptPending(self->http_server)) {
+    return false;
+  }
+
+  ShipNodeStartDialInterval(self);
+  return self->dial_interval_running;
+}
+
 // Attempt a client connection for nc.  Must be called with mutex held;
 // nc must be non-NULL with no attempt already running. A peer that has to
 // wait for the dial slot is dialled once the slot is free.
@@ -1114,7 +1129,7 @@ static void ShipNodeConnectToPendingSkiInternal(ShipNode* self, NodeConnectionOb
   }
 
   NodeConnection* peer = NODE_CONNECTION(nc);
-  peer->dial_deferred  = ShipNodeIsDialSlotBusy(self);
+  peer->dial_deferred  = ShipNodeIsDialSlotBusy(self) || ShipNodeIsDialHeldForIncoming(self);
   if (peer->dial_deferred) {
     return;
   }

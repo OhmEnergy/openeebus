@@ -82,6 +82,11 @@ struct HttpServer {
   WebsocketServerCallbackType conn_establish_cb;
   void* conn_establish_ctx;
   Vector wsi_ws_entries;
+  /**
+   * Incoming connections accepted and not yet passed to conn_establish_cb, in
+   * their TLS or WebSocket handshake. Elements are struct lws pointers.
+   */
+  Vector accepting_wsis;
 
   /**
    * @brief Fingerprint of the connecting peer's certificate
@@ -105,16 +110,28 @@ static void Destruct(HttpServerObject* self);
 static EebusError Start(HttpServerObject* self);
 static void Stop(HttpServerObject* self);
 static const char* GetPeerFingerprint(const HttpServerObject* self);
+static bool IsAcceptPending(const HttpServerObject* self);
 
 static const HttpServerInterface http_server_methods = {
     .destruct             = Destruct,
     .start                = Start,
     .stop                 = Stop,
     .get_peer_fingerprint = GetPeerFingerprint,
+    .is_accept_pending    = IsAcceptPending,
 };
 
 const char* GetPeerFingerprint(const HttpServerObject* self) {
   return HTTP_SERVER(self)->peer_fingerprint;
+}
+
+bool IsAcceptPending(const HttpServerObject* self) {
+  HttpServer* const srv = HTTP_SERVER(self);
+
+  EEBUS_MUTEX_LOCK(srv->mutex);
+  const bool pending = VectorGetSize(&srv->accepting_wsis) > 0;
+  EEBUS_MUTEX_UNLOCK(srv->mutex);
+
+  return pending;
 }
 
 static WsiWsEntry* WsiWsEntryCreate(struct lws* wsi, WebsocketObject* ws);
@@ -137,6 +154,7 @@ static int HttpServerOnReceive(HttpServer* self, struct lws* wsi, void* in, size
 static int HttpServerOnWriteable(HttpServer* self, struct lws* wsi);
 static int HttpServerOnConnectionClose(HttpServer* self, struct lws* wsi);
 static int HttpServerOnSslContextCreated(HttpServer* self, void* ssl_ctx);
+static void HttpServerSetAccepting(HttpServer* self, struct lws* wsi, bool accepting);
 static int
 HttpServerServiceCallback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
 
@@ -187,6 +205,7 @@ void HttpServerConstruct(
   self->lws_ctx = NULL;
 
   VectorConstructWithDeallocator(&self->wsi_ws_entries, WsiWsEntryDelete);
+  VectorConstruct(&self->accepting_wsis);
 
   self->mutex = EebusMutexCreateRecursive();
 }
@@ -214,6 +233,7 @@ void Destruct(HttpServerObject* self) {
 
   VectorFreeElements(&srv->wsi_ws_entries);
   VectorDestruct(&srv->wsi_ws_entries);
+  VectorDestruct(&srv->accepting_wsis);
 
   if (srv->mutex != NULL) {
     EebusMutexDelete(srv->mutex);
@@ -458,6 +478,17 @@ int HttpServerOnConnectionClose(HttpServer* self, struct lws* wsi) {
   return 0;
 }
 
+// Every wsi of the server context but the listening socket is created by
+// adopting an accepted socket, and every wsi is destroyed once.
+void HttpServerSetAccepting(HttpServer* self, struct lws* wsi, bool accepting) {
+  EEBUS_MUTEX_LOCK(self->mutex);
+  VectorRemove(&self->accepting_wsis, wsi);
+  if (accepting) {
+    VectorPushBack(&self->accepting_wsis, wsi);
+  }
+  EEBUS_MUTEX_UNLOCK(self->mutex);
+}
+
 int HttpServerOnSslContextCreated(HttpServer* self, void* ssl_ctx) {
   if (!TLS_CERTIFICATE_HAS_SSL_CTX_CONFIG(self->tls_cert)) {
     return 0;
@@ -475,7 +506,16 @@ int HttpServerServiceCallback(struct lws* wsi, enum lws_callback_reasons reason,
     /* The new vhost TLS context arrives in the user parameter. */
     case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS: ret = HttpServerOnSslContextCreated(srv, user); break;
 
-    case LWS_CALLBACK_ESTABLISHED: ret = HttpServerOnClientConnect(srv, wsi); break;
+    case LWS_CALLBACK_WSI_CREATE: HttpServerSetAccepting(srv, wsi, true); break;
+
+    // The connection stays pending until the node has taken or refused it, so
+    // a node that reads it as not pending already holds any record of it.
+    case LWS_CALLBACK_ESTABLISHED:
+      ret = HttpServerOnClientConnect(srv, wsi);
+      HttpServerSetAccepting(srv, wsi, false);
+      break;
+
+    case LWS_CALLBACK_WSI_DESTROY: HttpServerSetAccepting(srv, wsi, false); break;
 
     case LWS_CALLBACK_RECEIVE: ret = HttpServerOnReceive(srv, wsi, in, len); break;
 
