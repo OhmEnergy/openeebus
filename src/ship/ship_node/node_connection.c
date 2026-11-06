@@ -20,6 +20,7 @@
 
 #include "node_connection.h"
 #include "node_connection_internal.h"
+#include "ship_node_config.h"
 
 #include "src/common/eebus_malloc.h"
 #include "src/common/eebus_timer/eebus_timer.h"
@@ -154,15 +155,19 @@ ShipConnectionObject* ReleaseShipConnection(NodeConnectionObject* self) {
 }
 
 static uint32_t RetryDelayMs(int attempt_cnt) {
+  static const uint32_t kMaxDelayMs = SHIP_NODE_RETRY_MAX_DELAY_MS;
+  static const uint32_t kFactor     = SHIP_NODE_RETRY_DELAY_FACTOR;
+
   if (attempt_cnt <= 1) {
-    return 0;
+    return (SHIP_NODE_RETRY_FIRST_DELAY_MS < kMaxDelayMs) ? SHIP_NODE_RETRY_FIRST_DELAY_MS : kMaxDelayMs;
   }
 
-  if (attempt_cnt == 2) {
-    return 3000;
+  uint32_t delay_ms = (SHIP_NODE_RETRY_INITIAL_DELAY_MS < kMaxDelayMs) ? SHIP_NODE_RETRY_INITIAL_DELAY_MS : kMaxDelayMs;
+  for (int i = 2; (i < attempt_cnt) && (kFactor > 1) && (delay_ms < kMaxDelayMs); ++i) {
+    delay_ms = (delay_ms > (kMaxDelayMs / kFactor)) ? kMaxDelayMs : (delay_ms * kFactor);
   }
 
-  return 10000;
+  return delay_ms;
 }
 
 uint32_t OnConnectionClosed(NodeConnectionObject* self) {

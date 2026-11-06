@@ -19,6 +19,7 @@
 
 #include "src/ship/ship_connection/ship_connection.h"
 #include "src/ship/ship_node/node_connection_internal.h"
+#include "src/ship/ship_node/ship_node_config.h"
 #include "tests/src/memory_leak.inc"
 #include "tests/src/mocks/common/eebus_timer/eebus_timer_mock.h"
 #include "tests/src/mocks/ship/ship_connection/ship_connection_mock.h"
@@ -72,6 +73,28 @@ TEST_F(NodeConnectionTest, OnConnectionClosedIncrements) {
   EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), 0u);
   EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), 3000u);
   EXPECT_FALSE(NODE_CONNECTION_IS_ATTEMPT_RUNNING(nc_));
+}
+
+TEST_F(NodeConnectionTest, RetryDelayFollowsTheConfiguredSchedule) {
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), (uint32_t)SHIP_NODE_RETRY_FIRST_DELAY_MS);
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), (uint32_t)SHIP_NODE_RETRY_INITIAL_DELAY_MS);
+
+  uint32_t previous = SHIP_NODE_RETRY_INITIAL_DELAY_MS;
+  for (int i = 0; i < 20; ++i) {
+    const uint32_t delay = NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_);
+    EXPECT_GE(delay, previous);
+    EXPECT_LE(delay, (uint32_t)SHIP_NODE_RETRY_MAX_DELAY_MS);
+    previous = delay;
+  }
+
+  EXPECT_EQ(previous, (uint32_t)SHIP_NODE_RETRY_MAX_DELAY_MS);
+}
+
+TEST_F(NodeConnectionTest, DefaultRetryDelaysAreZeroThenThreeThenTenSeconds) {
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), 0u);
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), 3000u);
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), 10000u);
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), 10000u);
 }
 
 TEST_F(NodeConnectionTest, ReleasedApprovalCannotAuthorizeAReplacementAtTheSameAddress) {
