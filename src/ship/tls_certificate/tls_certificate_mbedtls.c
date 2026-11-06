@@ -173,21 +173,33 @@ const char* CalcSubjectKeyIdStringWithBuf(const mbedtls_x509_crt* cert, unsigned
   p += 1;
   len -= 1;
 
-  // Calculate SHA1 hash of the remaining raw key data
+  // The SKI identifies the peer, so a digest is used only once two consecutive
+  // computations of it agree.
+  static const int kMaxAttempts = 4;
   unsigned char sha1[20];
+  unsigned char prev[20];
+  for (int i = 0; i < kMaxAttempts; i++) {
 #if MBEDTLS_VERSION_MAJOR >= 4
-  // mbedTLS 4.x removed the legacy hash API, use PSA
-  size_t sha1_len = 0;
-  int ret         = (int)psa_hash_compute(PSA_ALG_SHA_1, p, len, sha1, sizeof(sha1), &sha1_len);
+    // mbedTLS 4.x removed the legacy hash API, use PSA
+    size_t sha1_len = 0;
+    int ret         = (int)psa_hash_compute(PSA_ALG_SHA_1, p, len, sha1, sizeof(sha1), &sha1_len);
 #else
-  int ret = mbedtls_sha1(p, len, sha1);
+    int ret = mbedtls_sha1(p, len, sha1);
 #endif
-  if (ret != 0) {
-    TLS_CERTIFICATE_MBEDTLS_DEBUG_PRINTF("mbedtls_sha1 failed: -0x%04X\n", -ret);
-    return NULL;
+    if (ret != 0) {
+      TLS_CERTIFICATE_MBEDTLS_DEBUG_PRINTF("mbedtls_sha1 failed: -0x%04X\n", -ret);
+      return NULL;
+    }
+
+    if ((i > 0) && (memcmp(sha1, prev, sizeof(sha1)) == 0)) {
+      return StringWithHex(sha1, sizeof(sha1));
+    }
+
+    memcpy(prev, sha1, sizeof(sha1));
   }
 
-  return StringWithHex(sha1, sizeof(sha1));
+  TLS_CERTIFICATE_MBEDTLS_DEBUG_PRINTF("SHA1 of the public key is not stable\n");
+  return NULL;
 }
 
 const char* CalcSubjectKeyIdString(const mbedtls_x509_crt* cert) {
