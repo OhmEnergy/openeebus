@@ -30,6 +30,8 @@
 /** Longest a destroyed websocket waits for its pending close to be flushed */
 static const uint32_t kCloseFlushTimeoutMs = 2000;
 static const uint32_t kCloseFlushPollMs    = 10;
+/** Sleep after each service pass: lws_service() returns at once while a TLS step waits for the peer */
+static const uint32_t kClientServiceYieldMs = 10;
 
 typedef struct WebsocketClient WebsocketClient;
 
@@ -147,6 +149,7 @@ void* WebsocketClientLoop(void* parameters) {
 
   do {
     lws_service(ws->lws_ctx, 500);
+    EebusThreadUsleep((int32_t)(kClientServiceYieldMs * 1000));
   } while (!self->cancel && ws->wsi != NULL);
 
   return NULL;
