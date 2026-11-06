@@ -445,9 +445,19 @@ int WebsocketClientOnClientEstablished(WebsocketClient* self) {
   return 0;
 }
 
+// lws frees the wsi once its connection has failed or closed. Forgetting it
+// stops the service loop and keeps the write scheduler off the freed wsi until
+// the connection owner closes the websocket.
+static void WebsocketClientForgetWsi(Websocket* ws) {
+  EEBUS_MUTEX_LOCK(ws->wr_mutex);
+  ws->wsi = NULL;
+  EEBUS_MUTEX_UNLOCK(ws->wr_mutex);
+}
+
 int WebsocketClientOnClientConnectionError(WebsocketClient* self, const char* in, size_t len) {
   Websocket* const ws = WEBSOCKET(self);
   WEBSOCKET_DEBUG_PRINTF("client connection error: %s\n", (in != NULL) ? in : "(null)");
+  WebsocketClientForgetWsi(ws);
   WebsocketUserCallback(ws, kWebsocketCallbackTypeError, in, len);
   return 0;
 }
@@ -455,6 +465,7 @@ int WebsocketClientOnClientConnectionError(WebsocketClient* self, const char* in
 int WebsocketClientOnWsiDestroy(WebsocketClient* self) {
   Websocket* const ws = WEBSOCKET(self);
   WEBSOCKET_DEBUG_PRINTF("Destroying the wsi\n");
+  WebsocketClientForgetWsi(ws);
   WebsocketUserCallback(ws, kWebsocketCallbackTypeClose, "", 0);
   return 0;
 }
