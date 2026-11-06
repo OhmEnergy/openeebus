@@ -53,6 +53,44 @@ TEST_F(CmiClientWaitStateSuccessfulTests, ValidInitMessageReceived) {
   ExpectConnectionClose("", false);
 }
 
+TEST_F(CmiClientWaitStateSuccessfulTests, ConnectionEstablishedRestartsCmiTimeout) {
+  // Arrange: The connection is established before the init message arrives
+  ShipConnectionWebsocketCallback(kWebsocketCallbackTypeConnected, nullptr, 0, &sc);
+  ShipConnectionQueueMessage queue_msg{kShipConnectionQueueMsgTypeDataReceived, {nullptr}};
+  EEBUS_QUEUE_SEND(sc.msg_queue, &queue_msg, sizeof(queue_msg));
+
+  EXPECT_CALL(*wfr_timer_mock->gmock, Start(sc.wait_for_ready_timer, cmiTimeout, false)).Times(2);
+  EXPECT_CALL(*wfr_timer_mock->gmock, Stop(sc.wait_for_ready_timer));
+  ExpectStateUpdate(kCmiStateClientEvaluate);
+
+  // Act: Wait for message
+  CmiStateClientWait(&sc);
+
+  // Assert: The established event is consumed and SME is in kCmiStateClientEvaluate
+  EXPECT_EQ(SHIP_CONNECTION_GET_SHIP_STATE(&sc, nullptr), kCmiStateClientEvaluate);
+  ExpectConnectionClose("", false);
+}
+
+TEST_F(CmiClientWaitStateSuccessfulTests, TimeoutAfterConnectionEstablishedClosesConnection) {
+  // Arrange: The connection is established, then CmiTimeout expires
+  ShipConnectionWebsocketCallback(kWebsocketCallbackTypeConnected, nullptr, 0, &sc);
+  ShipConnectionQueueMessage queue_msg{kShipConnectionQueueMsgTypeTimeout, {nullptr}};
+  EEBUS_QUEUE_SEND(sc.msg_queue, &queue_msg, sizeof(queue_msg));
+
+  EXPECT_CALL(*wfr_timer_mock->gmock, Start(sc.wait_for_ready_timer, cmiTimeout, false)).Times(2);
+  EXPECT_CALL(*wfr_timer_mock->gmock, Stop(sc.wait_for_ready_timer)).Times(2);
+  EXPECT_CALL(*prr_timer_mock->gmock, Stop(sc.prolongation_request_reply_timer));
+  EXPECT_CALL(*spr_timer_mock->gmock, Stop(sc.send_prolongation_request_timer));
+  ExpectStateUpdate(kSmeStateError);
+  ExpectWebsocketClose("CMI client wait failed", false);
+
+  // Act: Wait for message
+  CmiStateClientWait(&sc);
+
+  // Assert: SME is in kSmeStateError
+  EXPECT_EQ(SHIP_CONNECTION_GET_SHIP_STATE(&sc, nullptr), kSmeStateError);
+}
+
 TEST_P(CmiClientWaitInvalidMessageReceivedTests, InvalidMessageTypeReceived) {
   // Arrange: Create message and send to queue
   ShipConnectionQueueMessage queue_msg{GetParam().msg_type, {nullptr}};

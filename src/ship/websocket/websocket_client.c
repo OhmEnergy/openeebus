@@ -482,6 +482,8 @@ int WebsocketClientOnClientEstablished(WebsocketClient* self) {
     }
   }
 
+  WebsocketUserCallback(ws, kWebsocketCallbackTypeConnected, NULL, 0);
+
   lws_sul_schedule(ws->lws_ctx, 0, &ws->sul_stagger, WebsocketStaggerCallback, kWebsocketStaggerDelay);
   lws_callback_on_writable(wsi);
   return 0;

@@ -463,6 +463,9 @@ void ShipConnectionWebsocketCallback(WebsocketCallbackType type, const void* in,
   } else if (type == kWebsocketCallbackTypeClose) {
     static const ShipConnectionQueueMessage close_msg = {.type = kShipConnectionQueueMsgTypeWebsocketClose};
     EEBUS_QUEUE_SEND(sc->msg_queue, &close_msg, kTimeoutInfinite);
+  } else if (type == kWebsocketCallbackTypeConnected) {
+    static const ShipConnectionQueueMessage connected_msg = {.type = kShipConnectionQueueMsgTypeWebsocketConnected};
+    EEBUS_QUEUE_SEND(sc->msg_queue, &connected_msg, kTimeoutInfinite);
   }
 }
 
@@ -531,8 +534,9 @@ EebusError ShipConnectionSend(ShipConnection* self, const MessageBuffer* buf) {
 // Waits for the next connection-thread message, filtering out trust decisions
 // that raced the handshake (see ShipConnectionPostTrustDecision()). The timer
 // bounds the whole wait, not a single queue read, so it keeps running across
-// loop iterations. On kEebusErrorOk, either *out_msg holds the next message to
-// interpret, or self->trust_decision has been set and *out_msg is stale.
+// loop iterations; it restarts only when the connection becomes established.
+// On kEebusErrorOk, either *out_msg holds the next message to interpret, or
+// self->trust_decision has been set and *out_msg is stale.
 static EebusError
 ShipConnectionWaitForMessage(ShipConnection* self, uint32_t timeout, ShipConnectionQueueMessage* out_msg) {
   EEBUS_TIMER_START(self->wait_for_ready_timer, timeout, false);
@@ -546,6 +550,14 @@ ShipConnectionWaitForMessage(ShipConnection* self, uint32_t timeout, ShipConnect
 
     if (queue_recv_ret != kEebusErrorOk) {
       break;
+    }
+
+    // SHIP 13.4.3: the CMI process, and so CmiTimeout, begins once the connection is
+    // established. A dialing client waits from the dial until then, so the wait restarts
+    // when the websocket reports its connection established.
+    if (out_msg->type == kShipConnectionQueueMsgTypeWebsocketConnected) {
+      EEBUS_TIMER_START(self->wait_for_ready_timer, timeout, false);
+      continue;
     }
 
     const bool is_trust_decision = (out_msg->type == kShipConnectionQueueMsgTypeTrustGranted)

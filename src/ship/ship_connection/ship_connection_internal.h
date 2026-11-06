@@ -56,6 +56,7 @@ enum ShipConnectionQueueMsgType {
   kShipConnectionQueueMsgTypeTrustGranted,
   kShipConnectionQueueMsgTypeTrustDenied,
   kShipConnectionQueueMsgTypeSpineInitialTimeout,
+  kShipConnectionQueueMsgTypeWebsocketConnected,
 };
 
 typedef enum ShipConnectionQueueMsgType ShipConnectionQueueMsgType;

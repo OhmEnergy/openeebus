@@ -42,6 +42,7 @@ enum WebsocketCallbackType {
   kWebsocketCallbackTypeError,
   kWebsocketCallbackTypeRead,
   kWebsocketCallbackTypeClose,
+  kWebsocketCallbackTypeConnected, /**< A client connection is established and its peer verified */
 };
 
 typedef enum WebsocketCallbackType WebsocketCallbackType;
