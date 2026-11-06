@@ -52,12 +52,12 @@ struct TlsCertificateInterface {
   size_t (*get_private_key_size)(const TlsCertificateObject* self);
 
   /**
-   * @brief Install this certificate onto a server's TLS context
+   * @brief Install this certificate onto a TLS context
    *
    * Optional, and left NULL by a certificate that exposes its material through
    * the getters above. A certificate whose private key is not readable as bytes
-   * implements this instead: it is handed an empty TLS context and configures
-   * itself onto it.
+   * implements this instead: it is handed an empty TLS context, server or
+   * client, and configures itself onto it.
    *
    * @param ssl_ctx TLS backend context, void* so this interface stays free of
    *                backend types.

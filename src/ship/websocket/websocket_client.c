@@ -41,6 +41,7 @@ struct WebsocketClient {
   const char* path;
   int port;
   const TlsCertificateObject* tls_cert;
+  bool tls_cert_config_failed;
   const char* remote_ski;
   const char* remote_fingerprint;
   struct lws_protocols protocols[2];
@@ -77,6 +78,7 @@ static EebusError WebsocketClientTryStart(WebsocketClient* self);
 static int WebsocketClientOnClientEstablished(WebsocketClient* self);
 static int WebsocketClientOnClientConnectionError(WebsocketClient* self, const char* in, size_t len);
 static int WebsocketClientOnWsiDestroy(WebsocketClient* self);
+static int WebsocketClientOnSslContextCreated(WebsocketClient* self, void* ssl_ctx);
 static int
 WebsocketClientServiceCallback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
 
@@ -96,13 +98,14 @@ EebusError WebsocketClientConstruct(
   self->cancel = false;
   self->thread = NULL;
 
-  self->uri                = StringCopy(uri);
-  self->address            = NULL;
-  self->path               = NULL;
-  self->port               = 0;
-  self->tls_cert           = tls_cert;
-  self->remote_ski         = StringCopy(remote_ski);
-  self->remote_fingerprint = StringCopy(remote_fingerprint);
+  self->uri                    = StringCopy(uri);
+  self->address                = NULL;
+  self->path                   = NULL;
+  self->port                   = 0;
+  self->tls_cert               = tls_cert;
+  self->tls_cert_config_failed = false;
+  self->remote_ski             = StringCopy(remote_ski);
+  self->remote_fingerprint     = StringCopy(remote_fingerprint);
 
   self->protocols[0]
       = (struct lws_protocols){SHIP_WEBSOCKET_SUB_PROTOCOL, WebsocketClientServiceCallback, 0, 16 * 1024, 0, self, 0};
@@ -180,7 +183,7 @@ struct lws_context* WebsocketClientLwsContextCreate(WebsocketClient* self) {
   // It will just allocate for 2 internal and 4 that we might use.
   static const uint32_t kFdLmitPerThread = 2 + 4;
 
-  const struct lws_context_creation_info lws_ctx_creation_info = (struct lws_context_creation_info){
+  struct lws_context_creation_info lws_ctx_creation_info = (struct lws_context_creation_info){
       .port      = CONTEXT_PORT_NO_LISTEN,
       .protocols = self->protocols,
       .gid       = (gid_t)-1,
@@ -194,13 +197,20 @@ struct lws_context* WebsocketClientLwsContextCreate(WebsocketClient* self) {
         "ECDHE-ECDSA-AES128-CCM8:"
         "ECDHE-ECDSA-AES128-SHA256",
 
-      .client_ssl_cert_mem     = TLS_CERTIFICATE_GET_CERTIFICATE(self->tls_cert),
-      .client_ssl_cert_mem_len = (unsigned int)TLS_CERTIFICATE_GET_CERTIFICATE_SIZE(self->tls_cert),
-      .client_ssl_key_mem      = TLS_CERTIFICATE_GET_PRIVATE_KEY(self->tls_cert),
-      .client_ssl_key_mem_len  = (unsigned int)TLS_CERTIFICATE_GET_PRIVATE_KEY_SIZE(self->tls_cert),
-
       .user = self,
   };
+
+  /*
+   * A certificate that configures itself is installed at
+   * LWS_CALLBACK_OPENSSL_LOAD_EXTRA_CLIENT_VERIFY_CERTS, onto the client TLS
+   * context lws creates with no TLS material of its own.
+   */
+  if (!TLS_CERTIFICATE_HAS_SSL_CTX_CONFIG(self->tls_cert)) {
+    lws_ctx_creation_info.client_ssl_cert_mem     = TLS_CERTIFICATE_GET_CERTIFICATE(self->tls_cert);
+    lws_ctx_creation_info.client_ssl_cert_mem_len = (unsigned int)TLS_CERTIFICATE_GET_CERTIFICATE_SIZE(self->tls_cert);
+    lws_ctx_creation_info.client_ssl_key_mem      = TLS_CERTIFICATE_GET_PRIVATE_KEY(self->tls_cert);
+    lws_ctx_creation_info.client_ssl_key_mem_len  = (unsigned int)TLS_CERTIFICATE_GET_PRIVATE_KEY_SIZE(self->tls_cert);
+  }
 
   if (WEBSOCKET_DEBUG == 2) {
     int logs = LLL_USER | LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_DEBUG;
@@ -288,6 +298,13 @@ EebusError WebsocketClientTryStart(WebsocketClient* self) {
   ws->lws_ctx = WebsocketClientLwsContextCreate(self);
   if (ws->lws_ctx == NULL) {
     WEBSOCKET_DEBUG_PRINTF("%s(), creating libwebsocket context failed\n", __func__);
+    return kEebusErrorInit;
+  }
+
+  // lws ignores the verdict of the TLS context callback, so a node that
+  // could not present its certificate is stopped here, before it dials.
+  if (self->tls_cert_config_failed) {
+    WEBSOCKET_DEBUG_PRINTF("%s(), installing the client certificate failed\n", __func__);
     return kEebusErrorInit;
   }
 
@@ -442,6 +459,19 @@ int WebsocketClientOnWsiDestroy(WebsocketClient* self) {
   return 0;
 }
 
+int WebsocketClientOnSslContextCreated(WebsocketClient* self, void* ssl_ctx) {
+  if (!TLS_CERTIFICATE_HAS_SSL_CTX_CONFIG(self->tls_cert)) {
+    return 0;
+  }
+
+  if (TLS_CERTIFICATE_CONFIGURE_SSL_CTX(self->tls_cert, ssl_ctx) != 0) {
+    self->tls_cert_config_failed = true;
+    return -1;
+  }
+
+  return 0;
+}
+
 int WebsocketClientServiceCallback(
     struct lws* wsi,
     enum lws_callback_reasons reason,
@@ -449,12 +479,16 @@ int WebsocketClientServiceCallback(
     void* in,
     size_t len
 ) {
-  UNUSED(user);
   WebsocketClient* const ws = lws_context_user(lws_get_context(wsi));
 
   WEBSOCKET_DEBUG_PRINTF("%s(), reason = %s\n", __func__, WebsocketLwsReasonToString(reason));
 
   switch (reason) {
+    // The new client TLS context arrives in the user parameter
+    case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_CLIENT_VERIFY_CERTS: {
+      return WebsocketClientOnSslContextCreated(ws, user);
+    }
+
     case LWS_CALLBACK_CLIENT_ESTABLISHED: {
       return WebsocketClientOnClientEstablished(ws);
     }
