@@ -26,6 +26,7 @@ struct ClientListenChoiceTestInput {
   const char* close_error_msg{"Error sending ship message"};
   ShipConnectionQueueMsgType queue_msg_type{kShipConnectionQueueMsgTypeDataReceived};
   std::string_view msg{""sv};
+  std::string_view abort_msg{kProtHandshakeAbortUnexpectedMessage};
   SmeState expected_state{kSmeStateError};
 };
 
@@ -63,8 +64,7 @@ TEST_P(
   EXPECT_CALL(*prr_timer_mock->gmock, Stop(sc.prolongation_request_reply_timer));
 
   MessageBuffer msg_buf{0};
-  ASSERT_EQ(MessageBufferInitHelper(&msg_buf, kProtHandshakeAbortUnexpectedMessage), kEebusErrorOk)
-      << "Wrong test input!";
+  ASSERT_EQ(MessageBufferInitHelper(&msg_buf, GetParam().abort_msg), kEebusErrorOk) << "Wrong test input!";
   ExpectWebsocketWrite(msg_buf, false);
 
   // Expect state update function calls
@@ -86,6 +86,7 @@ INSTANTIATE_TEST_SUITE_P(
             .description    = "Timed out waiting for message"sv,
             .queue_msg_type = kShipConnectionQueueMsgTypeTimeout,
             .msg            = kProtHandshakeSelectVersionMsg,
+            .abort_msg      = kProtHandshakeAbortTimeoutMsg,
         },
         ClientListenChoiceTestInput{
             .description    = "Canceled waiting for message"sv,

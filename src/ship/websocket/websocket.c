@@ -195,7 +195,8 @@ void WebsocketStaggerCallback(lws_sorted_usec_list_t* sul) {
   Websocket* const ws = lws_container_of(sul, Websocket, sul_stagger);
 
   if (ws != NULL) {
-    if (!WEBSOCKET_IS_CLOSED(WEBSOCKET_OBJECT(ws))) {
+    // A pending close still has queued frames and the close frame to write
+    if (ws->close_pending || !WEBSOCKET_IS_CLOSED(WEBSOCKET_OBJECT(ws))) {
       WEBSOCKET_SCHEDULE_WRITE(WEBSOCKET_OBJECT(ws));
     }
 

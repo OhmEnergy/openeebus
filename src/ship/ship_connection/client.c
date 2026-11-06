@@ -261,8 +261,14 @@ EebusError SmeProtHandshakeStateSendMaximumSupportedShipVersion(ShipConnection* 
 }
 
 void SmeProtHandshakeStateClientListenChoice(ShipConnection* self) {
-  if (ShipConnectionReceive(self, &self->msg, cmiTimeout) != kEebusErrorOk) {
-    SmeProtHandshakeStateAbort(self, kMessageProtocolHandshakeErrorTypeUnexpectedMessage);
+  const EebusError rx_err = ShipConnectionReceive(self, &self->msg, cmiTimeout);
+  if (rx_err != kEebusErrorOk) {
+    // SHIP 13.4.4.2.3: an expired Wait-Timer aborts with error type "timeout"
+    SmeProtHandshakeStateAbort(
+        self,
+        (rx_err == kEebusErrorTime) ? kMessageProtocolHandshakeErrorTypeTimeout
+                                    : kMessageProtocolHandshakeErrorTypeUnexpectedMessage
+    );
     return;
   }
 

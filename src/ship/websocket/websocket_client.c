@@ -27,6 +27,10 @@
 #include "src/ship/websocket/websocket_debug.h"
 #include "src/ship/websocket/websocket_internal.h"
 
+/** Longest a destroyed websocket waits for its pending close to be flushed */
+static const uint32_t kCloseFlushTimeoutMs = 2000;
+static const uint32_t kCloseFlushPollMs    = 10;
+
 typedef struct WebsocketClient WebsocketClient;
 
 struct WebsocketClient {
@@ -51,11 +55,12 @@ struct WebsocketClient {
 #define WEBSOCKET_CLIENT(obj) ((WebsocketClient*)(obj))
 
 static void Destruct(WebsocketObject* self);
+static void WebsocketClientClose(WebsocketObject* self, int32_t close_code, const char* reason);
 
 static const WebsocketInterface websocket_client_methods = {
     .destruct        = Destruct,
     .write           = WebsocketWrite,
-    .close           = WebsocketClose,
+    .close           = WebsocketClientClose,
     .is_closed       = WebsocketIsClosed,
     .get_close_error = WebsocketGetCloseError,
     .schedule_write  = WebsocketScheduleWrite,
@@ -363,6 +368,15 @@ WebsocketObject* WebsocketClientOpenWithFingerprint(
 void Destruct(WebsocketObject* self) {
   WebsocketClient* const ws = WEBSOCKET_CLIENT(self);
 
+  // The service thread owns a pending close until it reports the connection closed. Give it
+  // time to flush the queued frames and the close frame before the thread is stopped.
+  if (WEBSOCKET(ws)->close_pending) {
+    for (uint32_t waited_ms = 0; !WEBSOCKET(ws)->close_done && (waited_ms < kCloseFlushTimeoutMs);
+         waited_ms += kCloseFlushPollMs) {
+      EebusThreadUsleep((int32_t)(kCloseFlushPollMs * 1000));
+    }
+  }
+
   ws->cancel = true;
 
   if (ws->thread != NULL) {
@@ -395,6 +409,34 @@ void Destruct(WebsocketObject* self) {
   }
 
   WebsocketDestruct(self);
+}
+
+void WebsocketClientClose(WebsocketObject* self, int32_t close_code, const char* reason) {
+  Websocket* const ws = WEBSOCKET(self);
+
+  // The frames queued just before a close (an SME abort, a protocol handshake error, a close
+  // announcement) are what tell the peer why. Keep the service thread running so it writes
+  // them out and then closes the socket with a close frame, instead of dropping the connection.
+  EEBUS_MUTEX_LOCK(ws->wr_mutex);
+  if (ws->close_pending) {
+    // Already closing: a second close must not cut short the flush in progress
+    EEBUS_MUTEX_UNLOCK(ws->wr_mutex);
+    return;
+  }
+
+  const bool defer = (ws->wsi != NULL) && !ws->is_closed;
+  if (defer) {
+    ws->close_error   = close_code;
+    ws->is_closed     = true;
+    ws->close_pending = true;
+    // The owner stops listening once it closes; nothing received from here on is for it
+    ws->callback = NULL;
+  }
+  EEBUS_MUTEX_UNLOCK(ws->wr_mutex);
+
+  if (!defer) {
+    WebsocketClose(self, close_code, reason);
+  }
 }
 
 // LWS Handlers
@@ -447,10 +489,13 @@ int WebsocketClientOnClientEstablished(WebsocketClient* self) {
 
 // lws frees the wsi once its connection has failed or closed. Forgetting it
 // stops the service loop and keeps the write scheduler off the freed wsi until
-// the connection owner closes the websocket.
+// the connection owner closes the websocket. A pending close is complete then.
 static void WebsocketClientForgetWsi(Websocket* ws) {
   EEBUS_MUTEX_LOCK(ws->wr_mutex);
   ws->wsi = NULL;
+  if (ws->close_pending) {
+    ws->close_done = true;
+  }
   EEBUS_MUTEX_UNLOCK(ws->wr_mutex);
 }
 

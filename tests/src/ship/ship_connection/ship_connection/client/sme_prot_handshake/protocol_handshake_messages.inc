@@ -17,6 +17,15 @@
 
 using std::literals::string_view_literals::operator""sv;
 
+static constexpr std::string_view kProtHandshakeAbortTimeoutMsg =
+R"({
+  "messageProtocolHandshakeError": [
+    {
+      "error": 1
+    }
+  ]
+})"sv;
+
 static constexpr std::string_view kProtHandshakeAbortUnexpectedMessage =
 R"({
   "messageProtocolHandshakeError": [
