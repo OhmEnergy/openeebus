@@ -101,6 +101,7 @@ NodeConnectionConstruct(NodeConnection* nc, const char* ski, struct ShipNode* ow
   nc->dialed_connection             = NULL;
   nc->dial_in_flight                = false;
   nc->dial_deferred                 = false;
+  nc->redial_grace                  = false;
   nc->superseded_handshake_complete = false;
   nc->device_writer                 = NULL;
 
@@ -195,8 +196,15 @@ static uint32_t RetryDelayMs(int attempt_cnt) {
   return delay_ms;
 }
 
+// Returns the delay before the peer is dialled again. A connection the peer
+// dialled that reached data exchange leaves the peer a redial grace first.
 uint32_t OnConnectionClosed(NodeConnectionObject* self) {
   NodeConnection* const nc = NODE_CONNECTION(self);
+
+  static const uint32_t kRedialGraceMs = SHIP_NODE_PEER_REDIAL_GRACE_MS;
+
+  const bool peer_dialled = (nc->connection != NULL) && (nc->dialed_connection != nc->connection);
+  const bool grace        = (kRedialGraceMs > 0) && peer_dialled && nc->handshake_complete;
 
   ForgetDial(nc, nc->connection);
 
@@ -209,7 +217,13 @@ uint32_t OnConnectionClosed(NodeConnectionObject* self) {
 
   nc->attempt_cnt++;
 
-  return RetryDelayMs(nc->attempt_cnt);
+  const uint32_t delay_ms = RetryDelayMs(nc->attempt_cnt);
+  if (!grace) {
+    return delay_ms;
+  }
+
+  nc->redial_grace = true;
+  return (delay_ms > kRedialGraceMs) ? delay_ms : kRedialGraceMs;
 }
 
 void StopRetryTimer(NodeConnectionObject* self) {
@@ -240,6 +254,7 @@ bool OnHandshakeComplete(NodeConnectionObject* self) {
 
   nc->handshake_complete = true;
   nc->attempt_cnt        = 0;
+  nc->redial_grace       = false;
 
   return true;
 }

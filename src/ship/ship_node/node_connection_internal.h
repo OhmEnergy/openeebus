@@ -47,6 +47,11 @@ struct NodeConnection {
   bool dial_in_flight;
   /** A dial to this peer waits for the node's dial slot */
   bool dial_deferred;
+  /**
+   * No dial to this peer starts while set, see SHIP_NODE_PEER_REDIAL_GRACE_MS.
+   * The retry timer runs while it is set and clears it when it ends.
+   */
+  bool redial_grace;
   uint64_t pending_approval_id;
   int attempt_cnt;
   bool is_attempt_running;

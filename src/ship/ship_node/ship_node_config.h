@@ -54,6 +54,10 @@
 #define SHIP_NODE_DIAL_MIN_INTERVAL_MS FW_FWK_EEBUS_SHIP_DIAL_MIN_INTERVAL_MS
 #endif
 
+#if !defined(SHIP_NODE_PEER_REDIAL_GRACE_MS) && defined(FW_FWK_EEBUS_SHIP_PEER_REDIAL_GRACE_MS)
+#define SHIP_NODE_PEER_REDIAL_GRACE_MS FW_FWK_EEBUS_SHIP_PEER_REDIAL_GRACE_MS
+#endif
+
 /**
  * @brief Delay before the first retry after a connection to a peer closes
  */
@@ -96,6 +100,22 @@
  */
 #ifndef SHIP_NODE_DIAL_MIN_INTERVAL_MS
 #define SHIP_NODE_DIAL_MIN_INTERVAL_MS 1000
+#endif
+
+/**
+ * @brief Time left to a peer to dial again after closing a connection it dialled
+ *
+ * Applies when a connection that the peer opened closes after reaching data
+ * exchange. The peer is likely to dial again soon, and a dial of this node
+ * crossing it makes a double connection whose SHIP 12.2.3 resolution can end
+ * both connections. No dial to the peer starts for this time, unless a
+ * connection with the peer completes or its trust is registered again. When
+ * the time ends the peer is dialled, and a failed dial is retried on the
+ * schedule above. A connection that this node dialled is retried on the
+ * schedule alone. Zero disables the wait.
+ */
+#ifndef SHIP_NODE_PEER_REDIAL_GRACE_MS
+#define SHIP_NODE_PEER_REDIAL_GRACE_MS 10000
 #endif
 
 #endif  // SRC_SHIP_SHIP_NODE_SHIP_NODE_CONFIG_H_

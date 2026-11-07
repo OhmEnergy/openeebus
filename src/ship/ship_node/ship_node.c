@@ -969,6 +969,7 @@ ShipNodeRegisterPeerTrust(ShipNode* sn, const char* ship_id, const char* fingerp
   peer->is_trusted           = true;
   peer->provisional          = false;
   peer->trusted_by_pairing   = peer->trusted_by_pairing || (trust_source == kPeerTrustFromPairingRequest);
+  peer->redial_grace         = false;
   EEBUS_MUTEX_UNLOCK(sn->mutex);
 
   ShipNodeSchedulePeerConnection(sn, close_connection);
@@ -1172,7 +1173,12 @@ static void ShipNodeConnectToPendingSkiInternal(ShipNode* self, NodeConnectionOb
   }
 
   NodeConnection* peer = NODE_CONNECTION(nc);
-  peer->dial_deferred  = ShipNodeIsDialSlotBusy(self) || ShipNodeIsDialHeldForIncoming(self);
+  if (peer->redial_grace) {
+    // The retry timer dials the peer when the grace ends
+    return;
+  }
+
+  peer->dial_deferred = ShipNodeIsDialSlotBusy(self) || ShipNodeIsDialHeldForIncoming(self);
   if (peer->dial_deferred) {
     return;
   }
@@ -1220,6 +1226,19 @@ static void ShipNodeConnectToPendingSki(ShipNode* self, const char* ski) {
   }
 
   EEBUS_MUTEX_UNLOCK(self->mutex);
+}
+
+// The retry timer of a peer ended, which also ends its redial grace
+static void ShipNodeRetryConnectionForSki(ShipNode* self, const char* ski) {
+  EEBUS_MUTEX_LOCK(self->mutex);
+  NodeConnectionObject* nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(self->connections, ski);
+  if (nc != NULL) {
+    NODE_CONNECTION(nc)->redial_grace = false;
+  }
+
+  EEBUS_MUTEX_UNLOCK(self->mutex);
+
+  ShipNodeConnectToPendingSki(self, ski);
 }
 
 static void ShipNodeConnectToAllPendingSkis(ShipNode* self) {
@@ -1346,7 +1365,7 @@ void* ShipNodeConnectionLoop(void* ctx) {
     } else if (queue_msg.type == kShipNodeQueueMsgTypeShipCancelPairingSki) {
       ShipNodeCancelPairingSki(SHIP_NODE_OBJECT(sn), queue_msg.ski);
     } else if (queue_msg.type == kShipNodeQueueMsgTypeRetryConnectionForSki) {
-      ShipNodeConnectToPendingSki(sn, queue_msg.ski);
+      ShipNodeRetryConnectionForSki(sn, queue_msg.ski);
     } else if (queue_msg.type == kShipNodeQueueMsgTypePromoteFingerprint) {
       ShipNodePromoteFingerprint(sn);
     } else if (queue_msg.type == kShipNodeQueueMsgTypeApprovePendingSki) {
@@ -1599,6 +1618,8 @@ void ShipNodeRegisterSki(ShipNodeObject* self, const char* ski, bool is_trusted)
     NODE_CONNECTION(nc)->provisional = false;
 
     NODE_CONNECTION(nc)->pending_approval_id = 0;
+    // A registration is answered by a dial without waiting for the peer
+    NODE_CONNECTION(nc)->redial_grace = false;
   }
 
   EEBUS_MUTEX_UNLOCK(sn->mutex);

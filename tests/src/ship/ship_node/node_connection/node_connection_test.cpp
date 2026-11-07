@@ -97,6 +97,48 @@ TEST_F(NodeConnectionTest, DefaultRetryDelaysAreZeroThenThreeThenTenSeconds) {
   EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), 10000u);
 }
 
+TEST_F(NodeConnectionTest, ClosedConnectionThePeerDialledLeavesTheRedialGrace) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject connection{};
+  peer->connection = &connection;
+  NODE_CONNECTION_ON_HANDSHAKE_COMPLETE(nc_);
+
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), (uint32_t)SHIP_NODE_PEER_REDIAL_GRACE_MS);
+  EXPECT_TRUE(peer->redial_grace);
+}
+
+TEST_F(NodeConnectionTest, ClosedDialIsRetriedWithoutTheRedialGrace) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject connection{};
+  peer->connection        = &connection;
+  peer->dialed_connection = &connection;
+  NODE_CONNECTION_ON_HANDSHAKE_COMPLETE(nc_);
+
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), (uint32_t)SHIP_NODE_RETRY_FIRST_DELAY_MS);
+  EXPECT_FALSE(peer->redial_grace);
+}
+
+TEST_F(NodeConnectionTest, PeerDialledConnectionClosedBeforeDataExchangeIsRetriedOnTheSchedule) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject connection{};
+  peer->connection = &connection;
+
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), (uint32_t)SHIP_NODE_RETRY_FIRST_DELAY_MS);
+  EXPECT_FALSE(peer->redial_grace);
+}
+
+TEST_F(NodeConnectionTest, CompletedHandshakeEndsTheRedialGrace) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject connection{};
+  peer->connection = &connection;
+  NODE_CONNECTION_ON_HANDSHAKE_COMPLETE(nc_);
+  NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_);
+  ASSERT_TRUE(peer->redial_grace);
+
+  NODE_CONNECTION_ON_HANDSHAKE_COMPLETE(nc_);
+  EXPECT_FALSE(peer->redial_grace);
+}
+
 TEST_F(NodeConnectionTest, ReleasedApprovalCannotAuthorizeAReplacementAtTheSameAddress) {
   NodeConnection* peer = NODE_CONNECTION(nc_);
   ShipConnectionObject connection{};
