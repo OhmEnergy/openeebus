@@ -36,10 +36,14 @@ extern "C" {
 #define SHIP_PAIRING_REACTIVATION_MINUTES 15
 
 /**
- * @brief Seconds added to the reactivation interval. Section 4.3.1 sets a
- * minimum, so processing resumes a little after it rather than on its edge.
+ * @brief Seconds added to the reactivation interval, section 4.3.1
+ *
+ * Section 4.3.1 sets a minimum, so processing resumes a little after it rather
+ * than on its edge. The margin leaves time for discovery and acceptance of a
+ * new addCu-request after the minimum, and must stay shorter than the window in
+ * which the control unit re-checks that the earlier pairing has been revoked.
  */
-#define SHIP_PAIRING_REACTIVATION_MARGIN_SECONDS 180
+#define SHIP_PAIRING_REACTIVATION_MARGIN_SECONDS 60
 
 /**
  * @brief Creates a shippairing evaluator

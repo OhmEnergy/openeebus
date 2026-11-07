@@ -35,7 +35,8 @@ using testing::Return;
 
 namespace {
 
-constexpr uint32_t kReactivationMs = SHIP_PAIRING_REACTIVATION_MINUTES * 60 * 1000;
+constexpr uint32_t kReactivationMs =
+    (SHIP_PAIRING_REACTIVATION_MINUTES * 60 + SHIP_PAIRING_REACTIVATION_MARGIN_SECONDS) * 1000;
 
 bool MessageExchangeAvailable(void* ctx) {
   return *static_cast<bool*>(ctx);
