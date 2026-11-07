@@ -267,6 +267,7 @@ void ShipNodeConstruct(
 
   self->mdns_entries          = VectorCreateWithDeallocator(MdnsEntryDeallocator);
   self->mutex                 = EebusMutexCreate();
+  self->remote_device_mutex   = EebusMutexCreate();
   self->search_for_remote_ski = false;
   self->cancel                = false;
   self->next_approval_id      = 0;
@@ -370,6 +371,9 @@ void Destruct(InfoProviderObject* self) {
 
   EebusMutexDelete(sn->mutex);
   sn->mutex = NULL;
+
+  EebusMutexDelete(sn->remote_device_mutex);
+  sn->remote_device_mutex = NULL;
 
   if (sn->http_server != NULL) {
     HttpServerDelete(sn->http_server);
@@ -480,6 +484,34 @@ static void ShipNodeDiscardPendingTrust(ShipNode* self, ShipConnectionObject* sc
   EEBUS_MUTEX_UNLOCK(self->mutex);
 }
 
+// A peer has one SPINE remote device, owned by the connection that set it up
+// last. The close of any other connection to the peer leaves it in place, as
+// the owner still delivers data to its data reader. Without a recorded owner
+// the decision of the caller stands.
+static void ShipNodeNotifyDisconnected(ShipNode* self, const ShipConnectionObject* sc, const char* ski, bool notify) {
+  EEBUS_MUTEX_LOCK(self->remote_device_mutex);
+  EEBUS_MUTEX_LOCK(self->mutex);
+  NodeConnectionObject* const nc
+      = (ski == NULL) ? NULL : NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(self->connections, ski);
+  if (nc != NULL) {
+    NodeConnection* const peer = NODE_CONNECTION(nc);
+    if (peer->device_writer == DATA_WRITER_OBJECT(sc)) {
+      peer->device_writer = NULL;
+      notify              = true;
+    } else if (peer->device_writer != NULL) {
+      notify = false;
+    }
+  }
+
+  EEBUS_MUTEX_UNLOCK(self->mutex);
+
+  if (notify) {
+    SHIP_NODE_READER_ON_REMOTE_SKI_DISCONNECTED(self->ship_node_reader, ski);
+  }
+
+  EEBUS_MUTEX_UNLOCK(self->remote_device_mutex);
+}
+
 void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_error) {
   UNUSED(had_error);
 
@@ -537,9 +569,7 @@ void CloseShipConnection(ShipNode* self, ShipConnectionObject* sc, bool had_erro
     }
 
     SHIP_NODE_DEBUG_PRINTF("%s(), connection closed\n", __func__);
-    if (notify_disconnected) {
-      SHIP_NODE_READER_ON_REMOTE_SKI_DISCONNECTED(self->ship_node_reader, ski);
-    }
+    ShipNodeNotifyDisconnected(self, sc, ski, notify_disconnected);
 
     ShipConnectionDelete(sc);
     ShipConnectionDelete(older);
@@ -700,10 +730,23 @@ void HandleShipStateUpdate(InfoProviderObject* self, const char* ski, SmeState s
   }
 }
 
+// Setting up a remote device replaces the one the peer had, whichever of its
+// connections set that up, see ShipNodeNotifyDisconnected().
 DataReaderObject* SetupRemoteDevice(InfoProviderObject* self, const char* ski, DataWriterObject* data_writer) {
-  const ShipNode* const sn = SHIP_NODE(self);
+  ShipNode* const sn = SHIP_NODE(self);
 
-  return SHIP_NODE_READER_SETUP_REMOTE_DEVICE(sn->ship_node_reader, ski, data_writer);
+  EEBUS_MUTEX_LOCK(sn->remote_device_mutex);
+  EEBUS_MUTEX_LOCK(sn->mutex);
+  NodeConnectionObject* const nc = NODE_CONNECTION_CONTAINER_FIND_WITH_SKI(sn->connections, ski);
+  if (nc != NULL) {
+    NODE_CONNECTION(nc)->device_writer = data_writer;
+  }
+
+  EEBUS_MUTEX_UNLOCK(sn->mutex);
+
+  DataReaderObject* const data_reader = SHIP_NODE_READER_SETUP_REMOTE_DEVICE(sn->ship_node_reader, ski, data_writer);
+  EEBUS_MUTEX_UNLOCK(sn->remote_device_mutex);
+  return data_reader;
 }
 
 ShipPairingObject* GetShipPairing(ShipNodeObject* self) {

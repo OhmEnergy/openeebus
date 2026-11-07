@@ -49,6 +49,8 @@ struct ShipNode {
   ShipMdnsObject* mdns;
   Vector* mdns_entries;
   EebusMutexObject* mutex;
+  /** Serialises setting up a peer's SPINE remote device with removing it on a disconnect */
+  EebusMutexObject* remote_device_mutex;
   bool search_for_remote_ski;
   bool cancel;
   uint64_t next_approval_id;

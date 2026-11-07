@@ -102,6 +102,7 @@ NodeConnectionConstruct(NodeConnection* nc, const char* ski, struct ShipNode* ow
   nc->dial_in_flight                = false;
   nc->dial_deferred                 = false;
   nc->superseded_handshake_complete = false;
+  nc->device_writer                 = NULL;
 
   if (retry_fn == NULL) {
     return kEebusErrorInputArgumentNull;

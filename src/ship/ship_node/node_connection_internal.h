@@ -53,6 +53,12 @@ struct NodeConnection {
   bool handshake_complete;
   /** Whether the superseded connection reached data exchange */
   bool superseded_handshake_complete;
+  /**
+   * Writer of the connection the peer's SPINE remote device was set up for,
+   * compared by identity only. A peer has one remote device whichever of its
+   * connections set it up.
+   */
+  const DataWriterObject* device_writer;
   bool is_trusted;
   bool provisional;
   bool trusted_by_pairing;
