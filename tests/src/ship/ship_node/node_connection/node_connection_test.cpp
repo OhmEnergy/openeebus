@@ -107,12 +107,22 @@ TEST_F(NodeConnectionTest, ClosedConnectionThePeerDialledLeavesTheRedialGrace) {
   EXPECT_TRUE(peer->redial_grace);
 }
 
-TEST_F(NodeConnectionTest, ClosedDialIsRetriedWithoutTheRedialGrace) {
+TEST_F(NodeConnectionTest, ClosedDialLeavesTheRedialGrace) {
   NodeConnection* peer = NODE_CONNECTION(nc_);
   ShipConnectionObject connection{};
   peer->connection        = &connection;
   peer->dialed_connection = &connection;
   NODE_CONNECTION_ON_HANDSHAKE_COMPLETE(nc_);
+
+  EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), (uint32_t)SHIP_NODE_PEER_REDIAL_GRACE_MS);
+  EXPECT_TRUE(peer->redial_grace);
+}
+
+TEST_F(NodeConnectionTest, DialClosedBeforeDataExchangeIsRetriedOnTheSchedule) {
+  NodeConnection* peer = NODE_CONNECTION(nc_);
+  ShipConnectionObject connection{};
+  peer->connection        = &connection;
+  peer->dialed_connection = &connection;
 
   EXPECT_EQ(NODE_CONNECTION_ON_CONNECTION_CLOSED(nc_), (uint32_t)SHIP_NODE_RETRY_FIRST_DELAY_MS);
   EXPECT_FALSE(peer->redial_grace);

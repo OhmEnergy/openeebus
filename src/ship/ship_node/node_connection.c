@@ -196,15 +196,14 @@ static uint32_t RetryDelayMs(int attempt_cnt) {
   return delay_ms;
 }
 
-// Returns the delay before the peer is dialled again. A connection the peer
-// dialled that reached data exchange leaves the peer a redial grace first.
+// Returns the delay before the peer is dialled again. A connection that reached
+// data exchange, whichever side dialled it, leaves the peer a redial grace first.
 uint32_t OnConnectionClosed(NodeConnectionObject* self) {
   NodeConnection* const nc = NODE_CONNECTION(self);
 
   static const uint32_t kRedialGraceMs = SHIP_NODE_PEER_REDIAL_GRACE_MS;
 
-  const bool peer_dialled = (nc->connection != NULL) && (nc->dialed_connection != nc->connection);
-  const bool grace        = (kRedialGraceMs > 0) && peer_dialled && nc->handshake_complete;
+  const bool grace = (kRedialGraceMs > 0) && (nc->connection != NULL) && nc->handshake_complete;
 
   ForgetDial(nc, nc->connection);
 
