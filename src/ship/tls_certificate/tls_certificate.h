@@ -21,6 +21,8 @@
 #ifndef SRC_SHIP_TLS_CERTIFICATE_TLS_CERTIFICATE_H_
 #define SRC_SHIP_TLS_CERTIFICATE_TLS_CERTIFICATE_H_
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "src/common/eebus_errors.h"
@@ -43,6 +45,18 @@ static inline void TlsCertificateDelete(TlsCertificateObject* tls_certificate) {
 }
 
 const char* TlsCertificateCalcPublicKeySki(const uint8_t* cert, size_t cert_size);
+
+/**
+ * @brief Checks that a certificate's Subject Key Identifier is the SHA-1 of its public key
+ *
+ * SHIP requires this of every certificate (SHIP-TS-SEC-01). A certificate that
+ * states another SKI is spoofed, and the connection it came with is to be dropped.
+ *
+ * @param cert DER encoded certificate
+ * @param cert_size Size of the certificate in octets
+ * @return true if the certificate states an SKI, and it is that of its key
+ */
+bool TlsCertificateHasGenuineSki(const uint8_t* cert, size_t cert_size);
 
 /** @brief Size in octets of a SHA-256 digest, and of an HMAC-SHA256 output */
 #define TLS_CERTIFICATE_SHA256_SIZE 32

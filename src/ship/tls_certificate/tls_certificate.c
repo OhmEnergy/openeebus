@@ -325,6 +325,29 @@ const char* TlsCertificateCalcPublicKeySki(const uint8_t* cert, size_t cert_size
   return ski;
 }
 
+bool TlsCertificateHasGenuineSki(const uint8_t* cert, size_t cert_size) {
+  if ((cert == NULL) || (cert_size == 0)) {
+    return false;
+  }
+
+  const unsigned char* p = cert;
+
+  X509* const x509_cert = d2i_X509(NULL, &p, (long)cert_size);
+  if (x509_cert == NULL) {
+    return false;
+  }
+
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned int digest_size                = 0;
+  const ASN1_OCTET_STRING* const stated = X509_get0_subject_key_id(x509_cert);
+
+  const bool genuine = (stated != NULL) && (X509_pubkey_digest(x509_cert, EVP_sha1(), digest, &digest_size) == 1) &&
+                       ((int)digest_size == stated->length) && (memcmp(digest, stated->data, digest_size) == 0);
+
+  X509_free(x509_cert);
+  return genuine;
+}
+
 const char* TlsCertificateCalcFingerprintSha256(const uint8_t* cert, size_t cert_size) {
   if ((cert == NULL) || (cert_size == 0)) {
     return NULL;

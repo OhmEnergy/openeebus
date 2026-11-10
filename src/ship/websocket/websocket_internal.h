@@ -102,6 +102,14 @@ int WebsocketOnClose(WebsocketObject* self);
 const char* WebsocketGetSkiWithWsi(struct lws* wsi);
 
 /**
+ * @brief Checks that the SKI of the peer's certificate is that of its public key
+ *
+ * @param wsi Connection whose peer certificate is to be checked
+ * @return true if it is, false if it is not or the certificate cannot be read
+ */
+bool WebsocketPeerCertificateIsGenuine(struct lws* wsi);
+
+/**
  * @brief Calculates the SHA-256 fingerprint of the peer's certificate
  *
  * The authentication parameter SHIP Pairing Service verifies during the TLS

@@ -550,6 +550,11 @@ int WebsocketClientServiceCallback(
       return WebsocketClientOnSslContextCreated(ws, user);
     }
 
+    // The same refusal as on the server, for a peer the node dials
+    case LWS_CALLBACK_CLIENT_FILTER_PRE_ESTABLISH: {
+      return WebsocketPeerCertificateIsGenuine(wsi) ? 0 : -1;
+    }
+
     case LWS_CALLBACK_CLIENT_ESTABLISHED: {
       return WebsocketClientOnClientEstablished(ws);
     }

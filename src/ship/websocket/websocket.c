@@ -346,6 +346,29 @@ static const char* WebsocketGetPeerIdentity(struct lws* wsi, const char* (*calc)
   return identity;
 }
 
+bool WebsocketPeerCertificateIsGenuine(struct lws* wsi) {
+  if (wsi == NULL) {
+    return false;
+  }
+
+  static const size_t kMaxCertSize = 2048;
+
+  char* const buf = (char*)EEBUS_MALLOC(kMaxCertSize);
+  if (buf == NULL) {
+    return false;
+  }
+
+  union lws_tls_cert_info_results* const results = (union lws_tls_cert_info_results*)buf;
+
+  const size_t n = kMaxCertSize - sizeof(*results) + sizeof(results->ns.name);
+  const int err  = lws_tls_peer_cert_info(wsi, LWS_TLS_CERT_INFO_DER_RAW, results, n);
+  const bool genuine =
+      (err == 0) && (results->ns.len != 0) && TlsCertificateHasGenuineSki((const uint8_t*)results->ns.name, results->ns.len);
+
+  EEBUS_FREE(buf);
+  return genuine;
+}
+
 const char* WebsocketGetSkiWithWsi(struct lws* wsi) {
   const char* const ski = WebsocketGetPeerIdentity(wsi, TlsCertificateCalcPublicKeySki);
   if (ski == NULL) {

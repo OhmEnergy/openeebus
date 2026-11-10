@@ -421,6 +421,35 @@ const char* TlsCertificateCalcPublicKeySki(const uint8_t* cert, size_t cert_size
   return ski;
 }
 
+bool TlsCertificateHasGenuineSki(const uint8_t* cert, size_t cert_size) {
+  if ((cert == NULL) || (cert_size == 0)) {
+    return false;
+  }
+
+  if (!CryptoInit()) {
+    return false;
+  }
+
+  mbedtls_x509_crt x509_cert;
+  mbedtls_x509_crt_init(&x509_cert);
+  if (mbedtls_x509_crt_parse_der(&x509_cert, cert, cert_size) != 0) {
+    mbedtls_x509_crt_free(&x509_cert);
+    return false;
+  }
+
+  // A hardware SHA-1 can return a wrong digest once in a while. A spoofed SKI
+  // never matches its key, so hashing again cannot let one through.
+  bool genuine = false;
+  for (int attempt = 0; (attempt < 2) && !genuine; ++attempt) {
+    const char* const computed = CalcSubjectKeyIdString(&x509_cert);
+    genuine                    = (computed != NULL) && CheckSki(&x509_cert, computed);
+    StringDelete((char*)computed);
+  }
+
+  mbedtls_x509_crt_free(&x509_cert);
+  return genuine;
+}
+
 const char* TlsCertificateCalcFingerprintSha256(const uint8_t* cert, size_t cert_size) {
   if ((cert == NULL) || (cert_size == 0)) {
     return NULL;

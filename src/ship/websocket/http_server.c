@@ -508,6 +508,11 @@ int HttpServerServiceCallback(struct lws* wsi, enum lws_callback_reasons reason,
 
     case LWS_CALLBACK_WSI_CREATE: HttpServerSetAccepting(srv, wsi, true); break;
 
+    // The TLS handshake is over and the upgrade is not. A peer whose certificate
+    // states an SKI other than that of its key is refused here (SHIP-TS-SEC-01),
+    // before the node hears of it.
+    case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION: ret = WebsocketPeerCertificateIsGenuine(wsi) ? 0 : -1; break;
+
     // The connection stays pending until the node has taken or refused it, so
     // a node that reads it as not pending already holds any record of it.
     case LWS_CALLBACK_ESTABLISHED:
