@@ -550,8 +550,10 @@ int WebsocketClientServiceCallback(
       return WebsocketClientOnSslContextCreated(ws, user);
     }
 
-    // The same refusal as on the server, for a peer the node dials
-    case LWS_CALLBACK_CLIENT_FILTER_PRE_ESTABLISH: {
+    // The same refusal as on the server, for a peer the node dials. The TLS
+    // handshake is over and the upgrade request is not yet sent, so a refused
+    // peer never sees a connection.
+    case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER: {
       return WebsocketPeerCertificateIsGenuine(wsi) ? 0 : -1;
     }
 
